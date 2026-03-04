@@ -2,16 +2,11 @@ package viction
 
 import (
 	"math/big"
-	"sort"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/posv"
-	"github.com/ethereum/go-ethereum/contracts/validator/contract"
-	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
 )
 
 func GetCreatorAttestorPairs(c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig,
@@ -44,42 +39,4 @@ func getCreatorAttestorPairs(config *params.ChainConfig, posvConfig *params.Posv
 		}
 	}
 	return results, offset, nil
-}
-
-// Get eligble validators from the state.
-//
-// *NOTE: The injected state must be at the checkpoint block.
-func GetValidators(vicConfig *params.VictionConfig, state *state.StateDB, client bind.ContractBackend,
-) ([]common.Address, error) {
-	validatorContract, _ := contract.NewValidator(vicConfig.ValidatorContract, client)
-
-	opts := new(bind.CallOpts)
-	addresses, err := validatorContract.GetCandidates(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	candidates := []*posv.ValidatorInfo{}
-	for _, addr := range addresses {
-		cap, err := validatorContract.GetCandidateCap(opts, addr)
-		if err != nil {
-			return nil, err
-		}
-		if addr == (common.Address{}) {
-			continue
-		}
-		candidates = append(candidates, &posv.ValidatorInfo{Address: addr, Capacity: cap})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		return bigxt.IsGreaterThanOrEqualInt(candidates[i].Capacity, candidates[j].Capacity)
-	})
-	validatorMaxCountInt := int(vicConfig.ValidatorMaxCount)
-	if len(candidates) > validatorMaxCountInt {
-		candidates = candidates[:validatorMaxCountInt]
-	}
-	validators := []common.Address{}
-	for _, candidate := range candidates {
-		validators = append(validators, candidate.Address)
-	}
-	return validators, nil
 }

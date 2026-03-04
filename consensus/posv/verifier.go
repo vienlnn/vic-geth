@@ -138,10 +138,6 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 			log.Error("Failed to retrieve parent header for checkpoint verification")
 		}
 
-		if parents == nil {
-			log.Error("No parents provided for checkpoint verification")
-		}
-
 		chain := chain.(consensus.ChainReader)
 		if chain == nil {
 			log.Error("No chain reader provided for checkpoint verification")

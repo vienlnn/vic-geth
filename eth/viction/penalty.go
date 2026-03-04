@@ -32,11 +32,11 @@ func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvCon
 
 	for i := prevCheckpointBlockNumber; i < blockNumber; i++ {
 		if i%vicConfig.ValidatorSignInterval == 0 || !config.IsTIP2019(big.NewInt(int64(i))) {
-			headr := chain.GetHeaderByNumber(i)
+			header := chain.GetHeaderByNumber(i)
 			if len(validators) == 0 {
 				break
 			}
-			txs := c.GetSignDataForBlock(config, vicConfig, headr, chain)
+			txs := c.GetSignDataForBlock(config, vicConfig, header, chain)
 			signer := types.MakeSigner(config, big.NewInt(int64(i)))
 			// Check for BlockSign of specific signer
 			for _, tx := range txs {
@@ -74,8 +74,8 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 	blockHash := header.ParentHash
 	for i := uint64(0); i < posvConfig.Epoch; i++ {
 		epochBlockHashes[i] = blockHash
-		headr := chain.GetHeaderByHash(blockHash)
-		miner, _ := c.Author(headr)
+		header := chain.GetHeaderByHash(blockHash)
+		miner, _ := c.Author(header)
 		if count, ok := blockMiningCounts[miner]; ok {
 			blockMiningCounts[miner] = count + 1
 		} else {
@@ -122,13 +122,13 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 		mapBlockHash := map[common.Hash]bool{}
 		for i := vicConfig.PenaltyComebackBlockCount - 1; i >= 0; i-- {
 			blockNumber := header.Number.Uint64() - i - 1
-			headr := chain.GetHeaderByNumber(blockNumber)
+			header := chain.GetHeaderByNumber(blockNumber)
 			blockHash := epochBlockHashes[i]
 			if blockNumber%vicConfig.ValidatorSignInterval == 0 {
 				mapBlockHash[blockHash] = true
 			}
-			txs := c.GetSignDataForBlock(config, vicConfig, headr, chain)
-			signer := types.MakeSigner(config, big.NewInt(int64(i)))
+			txs := c.GetSignDataForBlock(config, vicConfig, header, chain)
+			signer := types.MakeSigner(config, big.NewInt(int64(blockNumber)))
 			// Check for BlockSign of specific signer
 			for _, tx := range txs {
 				signedBlockHash := common.BytesToHash(tx.Data()[len(tx.Data())-32:])

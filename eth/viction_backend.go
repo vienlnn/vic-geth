@@ -35,18 +35,9 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 	block := chain.GetBlock(header.Hash(), blockNumber.Uint64())
 	data := []types.Transaction{}
 	transactions := block.Transactions()
-	if config.IsTIPSigning(blockNumber) {
-		for _, tx := range transactions {
-			if IsVicBlockSingingTx(*tx, vicConfig) {
-				data = append(data, *tx)
-			}
-		}
-	} else {
-		// TODO: Handle receipts later
-		for _, tx := range transactions {
-			if IsVicBlockSingingTx(*tx, vicConfig) {
-				data = append(data, *tx)
-			}
+	for _, tx := range transactions {
+		if IsVicBlockSingingTx(*tx, vicConfig) {
+			data = append(data, *tx)
 		}
 	}
 	return data
