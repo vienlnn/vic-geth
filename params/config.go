@@ -551,7 +551,7 @@ func (c *ChainConfig) IsTIPTomoXLending(num *big.Int) bool {
 	return isForked(c.TIPTomoXLendingBlock, num)
 }
 
-// IsTomoXCancelFee returns whether num is either equal to the TIPTomoXCancelFee fork block or greater.
+// IsTIPTomoXCancelFee returns whether num is either equal to the TIPTomoXCancelFee fork block or greater.
 func (c *ChainConfig) IsTIPTomoXCancelFee(num *big.Int) bool {
 	return isForked(c.TIPTomoXCancelFeeBlock, num)
 }

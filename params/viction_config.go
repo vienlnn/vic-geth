@@ -8,14 +8,11 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 )
 
-// ──────────────────────────────────────────────────────────────────────────────
 // Legacy TomoX constants and helpers.
 //
 // Some of these share names with VictionConfig struct fields. They coexist
 // because legacy tradingstate utility functions are pure helpers without access
 // to a VictionConfig instance - they use these package-level defaults directly.
-// ──────────────────────────────────────────────────────────────────────────────
-
 var (
 	TomoNativeAddress      = "0x0000000000000000000000000000000000000001"
 	TradingStateAddr       = "0x0000000000000000000000000000000000000092"

@@ -330,8 +330,6 @@ func InitSignerInTransactions(config *params.ChainConfig, header *types.Header, 
 	wg.Wait()
 }
 
-// --- TomoX Legacy Blackbox ---
-
 // SetTradingEngine injects the legacy TomoX trading engine into the state processor.
 // Called by the blockchain layer during initialization when TomoX is needed for sync.
 // Stored on the processor (not per-block state) since it persists across blocks.
@@ -340,18 +338,9 @@ func (p *StateProcessor) SetTradingEngine(engine TradingEngine) {
 }
 
 // applyTomoXTx decodes and replays TomoX order matches from a 0x91 transaction.
-// This is the sync-stage counterpart to the original miner's ProcessOrderPending().
-//
-// During block production, the miner:
-//  1. Called ProcessOrderPending() to match orders
-//  2. Encoded results as TxMatchBatch → tx to 0x91
-//
-// During sync, we reverse this:
-//  1. Decode the TxMatchBatch from tx.Data()
-//  2. Replay each order via CommitOrder() → mutates statedb + tradingStateDB
-//  3. Return an empty receipt (zero gas, no EVM execution)
+// During sync, it decodes the TxMatchBatch, replays each order via CommitOrder
+// (mutating both the state and the trading orderbook), and returns an empty receipt.
 func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transaction, header *types.Header, usedGas *uint64) (bool, *types.Receipt, uint64, error, *big.Int) {
-	// First, produce the empty receipt (nonce increment + zero gas)
 	var root []byte
 	if p.config.IsByzantium(header.Number) {
 		statedb.Finalise(true)
@@ -359,12 +348,10 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 		root = statedb.IntermediateRoot(p.config.IsEIP158(header.Number)).Bytes()
 	}
 
-	// Decode the TxMatchBatch from the transaction data
 	if len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		txMatchBatch, err := tradingstate.DecodeTxMatchesBatch(tx.Data())
 		if err != nil {
 			log.Error("TomoX: failed to decode TxMatchBatch", "tx", tx.Hash().Hex(), "err", err)
-			// Don't fail the block — the receipt is still valid
 		} else {
 			coinbase := header.Coinbase
 			tradingEngine := p.tradingEngine
@@ -378,11 +365,8 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 					continue
 				}
 
-				// Compute the order book hash from base/quote token pair
 				orderBook := tradingstate.GetTradingOrderBookHash(order.BaseToken, order.QuoteToken)
 
-				// Replay the order through the matching engine
-				// This mutates both statedb (token balances) and tradingStateDB (order book)
 				trades, rejects, err := tradingEngine.CommitOrder(header, coinbase, p.bc, statedb, tradingStateDB, orderBook, order)
 				if err != nil {
 					log.Error("TomoX: CommitOrder failed", "index", i, "order", order.Hash.Hex(), "err", err)
