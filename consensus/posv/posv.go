@@ -310,8 +310,8 @@ func (c *Posv) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	return c.verifyHeaderWithCache(chain, header, nil, seal)
 }
 
-func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) *big.Int {
-	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, chain)
+func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) *big.Int {
+	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, chain, parents)
 	if err == nil {
 		distance := Distance(currentIndex, parentIndex, validatorCount)
 		return big.NewInt(int64(validatorCount - distance + 1))
@@ -330,8 +330,8 @@ func Distance(currentIndex, parentIndex, validatorCount int) int {
 
 // Check if the signer is inturn to mint current block. Also return context of the check including:
 // currentIndex, parentIndex, validatorCount.
-func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) (bool, int, int, int, error) {
-	checkpointHeader := GetCheckpointHeader(c.config, parent, chain)
+func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) (bool, int, int, int, error) {
+	checkpointHeader := GetCheckpointHeader(c.config, parent, chain, parents)
 	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
 	validatorsCount := len(validators)
 	if validatorsCount == 0 {
@@ -395,7 +395,7 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	}
 
 	// Set the correct difficulty using the parent header fetched earlier
-	header.Difficulty = c.calcDifficulty(c.signer, parent, chain)
+	header.Difficulty = c.calcDifficulty(c.signer, parent, chain, nil)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < ExtraVanity {
@@ -581,7 +581,7 @@ func (c *Posv) Seal(chain consensus.ChainHeaderReader, block *types.Block, resul
 // that a new block should have based on the previous blocks in the chain and the
 // current signer.
 func (c *Posv) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
-	return c.calcDifficulty(c.signer, parent, chain)
+	return c.calcDifficulty(c.signer, parent, chain, nil)
 }
 
 // VerifyUncles implements consensus.Engine, always returning an error for any
@@ -632,6 +632,36 @@ func (c *Posv) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types
 
 	go func() {
 		for i, header := range headers {
+			number := header.Number.Uint64()
+			// Checkpoint block: PosvGetValidators reads validator set from the state
+			// at the gap block (checkpoint - Gap). Wait until that block is committed
+			// before attempting verification.
+			if c.config != nil && number > 0 && number%c.config.Epoch == 0 {
+				requiredBlock := number - c.config.Gap
+				lastLog := time.Now()
+				for {
+					select {
+					case <-abort:
+						return
+					default:
+					}
+					if chain.CurrentHeader().Number.Uint64() >= requiredBlock {
+						break
+					}
+					if time.Since(lastLog) >= 5*time.Second {
+						log.Debug("VerifyHeaders: waiting for gap block before verifying checkpoint",
+							"checkpoint", number, "requiredBlock", requiredBlock,
+							"currentBlock", chain.CurrentHeader().Number.Uint64())
+						lastLog = time.Now()
+					}
+					select {
+					case <-abort:
+						return
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
+			}
+
 			err := c.verifyHeaderWithCache(chain, header, headers[:i], seals[i])
 			select {
 			case <-abort:
@@ -653,3 +683,25 @@ func (c *Posv) Author(header *types.Header) (common.Address, error) {
 
 // Get signer coinbase
 func (c *Posv) Signer() common.Address { return c.signer }
+
+func (c *Posv) UpdateMasternodes(chain consensus.ChainReader, header *types.Header, ms []Masternode) error {
+	number := header.Number.Uint64()
+	log.Trace("take snapshot", "number", number, "hash", header.Hash())
+	// get snapshot
+	snap, err := c.snapshot(chain, number, header.Hash(), nil)
+	if err != nil {
+		return err
+	}
+	newMasternodes := make(map[common.Address]struct{})
+	for _, m := range ms {
+		newMasternodes[m.Address] = struct{}{}
+	}
+	snap.Signers = newMasternodes
+	nm := []string{}
+	for _, n := range ms {
+		nm = append(nm, n.Address.String())
+	}
+	c.recents.Add(snap.Hash, snap)
+	log.Info("New set of masternodes has been updated to snapshot", "number", snap.Number, "hash", snap.Hash, "new masternodes", nm)
+	return nil
+}

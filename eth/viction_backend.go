@@ -1,6 +1,7 @@
 package eth
 
 import (
+	"fmt"
 	"math/big"
 	"sort"
 
@@ -157,7 +158,7 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 
 	state, err := s.BlockChain().StateAt(header.Root)
 	if err != nil {
-		return []common.Address{}, err
+		return []common.Address{}, fmt.Errorf("failed to get state at header root (block %v): %v", header.Number, err)
 	}
 	contracrAddress := vicConfig.ValidatorContract
 	if contracrAddress == (common.Address{}) {

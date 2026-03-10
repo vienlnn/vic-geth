@@ -162,12 +162,12 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	if err != nil {
 		return err
 	}
+
 	if c.backend == nil {
 		return nil
 	}
 	validators := snap.GetSigners()
 
-	log.Info("Validators from snapshot", "number", number, "validators", validators)
 	retryCount := 0
 	for retryCount < 2 {
 		// compare penalties computed from state with header.Penalties
@@ -214,17 +214,26 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 		}
 		// if not matched, try to get validators from smart contract and verify again
 		if retryCount == 0 {
-			// Get the gap block checkpoint which defines the current validators
-			gapBlockNumber := number - c.config.Gap
-			gapBlockHeader := chain.GetHeaderByNumber(gapBlockNumber)
-			validators, err = c.backend.PosvGetValidators(chain.Config().Viction, gapBlockHeader, chain)
-			if err != nil {
-				return err
+			// Try gap block first, then walk forward up to number-1 if state is unavailable
+			var fetchErr error
+			for gapBlockNumber := number - c.config.Gap; gapBlockNumber < number; gapBlockNumber++ {
+				gapBlockHeader := chain.GetHeaderByNumber(gapBlockNumber)
+				validators, fetchErr = c.backend.PosvGetValidators(chain.Config().Viction, gapBlockHeader, chain)
+				if fetchErr == nil && len(validators) > 0 {
+					log.Info("Validators from smart contract", "number", number, "gapBlockNumber", gapBlockNumber, "validators", validators)
+					break
+				}
+				log.Debug("PosvGetValidators failed or returned empty, trying next block",
+					"number", number, "gapBlockNumber", gapBlockNumber, "err", fetchErr)
+			}
+			if fetchErr != nil {
+				return fetchErr
 			}
 		}
 
 		// maximum retry reached, return error
 		if retryCount == 1 {
+			log.Info("Checkpoint validator mismatch", "number", number, "computedValidators", validators, "headerValidators", headerValidators)
 			return errInvalidCheckpointValidators
 		}
 		retryCount++
@@ -245,9 +254,8 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 		return nil
 	}
 
-	// Get validators from checkpoint header to avoid excessive IPC calls
 	var validators []common.Address
-	checkpointHeader := GetCheckpointHeader(c.config, header, chain)
+	checkpointHeader := GetCheckpointHeader(c.config, header, chain, parents)
 	if checkpointHeader == nil {
 		return fmt.Errorf("couldn't find checkpoint header")
 	}
@@ -264,7 +272,7 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 	} else {
 		parent = chain.GetHeader(header.ParentHash, number-1)
 	}
-	difficulty := c.calcDifficulty(creator, parent, chain)
+	difficulty := c.calcDifficulty(creator, parent, chain, parents)
 	if header.Number.Uint64() > 0 {
 		if header.Difficulty.Int64() != difficulty.Int64() {
 			return errInvalidDifficulty
@@ -333,8 +341,9 @@ func (c *Posv) snapshot(chain consensus.ChainHeaderReader, number uint64, hash c
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if (number+c.config.Gap)%c.config.Epoch == 0 {
+			// log.Info("Loaded voting snapshot from disk", "number", number, "hash", hash)
 			if s, err := loadSnapshot(c.config, c.signatures, c.db, hash); err == nil {
-				log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
+				// log.Info("Loaded checkpoint snapshot from disk", "number", number, "hash", hash)
 				snap = s
 				break
 			}
@@ -394,7 +403,6 @@ func (c *Posv) snapshot(chain consensus.ChainHeaderReader, number uint64, hash c
 		if err = snap.store(c.db); err != nil {
 			return nil, err
 		}
-		log.Trace("Stored voting snapshot to disk", "number", snap.Number, "hash", snap.Hash)
 	}
 	return snap, err
 }

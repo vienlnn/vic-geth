@@ -23,6 +23,7 @@ import (
 	"io"
 	"math/big"
 	mrand "math/rand"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/consensus/posv"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -45,6 +47,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	lru "github.com/hashicorp/golang-lru"
+	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
 )
 
 var (
@@ -1737,6 +1740,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 	it := newInsertIterator(chain, results, bc.validator)
 
 	block, err := it.next()
+	log.Info("Inserting block", "number", block.Number())
 
 	// Left-trim all the known blocks
 	if err == ErrKnownBlock {
@@ -1968,6 +1972,15 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)
+		if bc.chainConfig.Posv != nil {
+			// prepare set of masternodes for the next epoch
+			if (block.NumberU64() % bc.chainConfig.Posv.Epoch) == (bc.chainConfig.Posv.Epoch - bc.chainConfig.Posv.Gap) {
+				err := bc.UpdateM1()
+				if err != nil {
+					log.Crit("Error when update masternodes set. Stopping node", "err", err)
+				}
+			}
+		}
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && errors.Is(err, consensus.ErrFutureBlock) {
@@ -2555,4 +2568,68 @@ func (bc *BlockChain) SubscribeLogsEvent(ch chan<- []*types.Log) event.Subscript
 // block processing has started while false means it has stopped.
 func (bc *BlockChain) SubscribeBlockProcessingEvent(ch chan<- bool) event.Subscription {
 	return bc.scope.Track(bc.blockProcFeed.Subscribe(ch))
+}
+
+func (bc *BlockChain) UpdateM1() error {
+	engine, ok := bc.Engine().(*posv.Posv)
+	if bc.Config().Posv == nil || !ok {
+		return fmt.Errorf("PoSV engine is not enabled")
+	}
+	log.Info("It's time to update new set of masternodes for the next epoch...")
+
+	contracrAddress := bc.chainConfig.Viction.ValidatorContract
+	if contracrAddress == (common.Address{}) {
+		fmt.Errorf("Validator contract address is not set in chain config")
+	}
+
+	var candidates []common.Address
+
+	// get candidates from slot of stateDB
+	// if can't get anything, request from contracts
+	stateDB, err := bc.State()
+	if err != nil {
+		fmt.Errorf("failed to get state at header root (block %v): %v", bc.CurrentHeader().Number, err)
+	}
+	candidates = stateDB.VicGetCandidates(contracrAddress)
+
+	var ms []posv.Masternode
+	for _, candidate := range candidates {
+		_, cap := stateDB.VicGetValidatorInfo(contracrAddress, candidate)
+
+		//TODO: smart contract shouldn't return "0x0000000000000000000000000000000000000000"
+		if candidate.String() != "0x0000000000000000000000000000000000000000" {
+			ms = append(ms, posv.Masternode{Address: candidate, Stake: cap})
+		}
+	}
+	if len(ms) == 0 {
+		log.Error("No masternode found. Stopping node")
+		os.Exit(1)
+	} else {
+		header := bc.CurrentHeader()
+		if bc.Config().IsAtlas(header.Number) {
+			sort.SliceStable(ms, func(i, j int) bool {
+				return ms[i].Stake.Cmp(ms[j].Stake) >= 0
+			})
+		} else {
+			sort.Slice(candidates, func(i, j int) bool {
+				return bigxt.IsGreaterThanOrEqualInt(ms[i].Stake, ms[j].Stake)
+			})
+		}
+		log.Info("Ordered list of masternode candidates")
+		for _, m := range ms {
+			log.Info("", "address", m.Address.String(), "stake", m.Stake)
+		}
+		// update masternodes
+		log.Info("Updating new set of masternodes")
+		if len(ms) > int(bc.chainConfig.Viction.ValidatorMaxCount) {
+			err = engine.UpdateMasternodes(bc, header, ms[:bc.chainConfig.Viction.ValidatorMaxCount])
+		} else {
+			err = engine.UpdateMasternodes(bc, header, ms)
+		}
+		if err != nil {
+			return err
+		}
+		log.Info("Masternodes are ready for the next epoch")
+	}
+	return nil
 }

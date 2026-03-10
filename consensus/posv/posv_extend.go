@@ -79,14 +79,25 @@ type PosvBackend interface {
 }
 
 // Check If the given block is a checkpoint block, return it, else return previous checkpoint block header.
-func GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader) *types.Header {
+// GetCheckpointHeader returns the checkpoint header for the epoch that contains
+// the given header. If the header itself is a checkpoint (number % epoch == 0)
+// it is returned directly. Otherwise the function walks backward through
+// parents (in-batch, not yet in DB) looking for the epoch boundary block,
+// and falls back to a canonical DB lookup if not found there.
+func GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) *types.Header {
 	blockNumber := header.Number.Uint64()
 	if blockNumber%posvConfig.Epoch == 0 {
 		return header
 	}
 	prevCheckpointBlockNumber := blockNumber - (blockNumber % posvConfig.Epoch)
-	prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
-	return prevCheckpointHeader
+	// Walk backward through parents (in-batch headers not yet in DB).
+	for i := len(parents) - 1; i >= 0; i-- {
+		if parents[i].Number.Uint64() == prevCheckpointBlockNumber {
+			return parents[i]
+		}
+	}
+	// Fall back to canonical DB lookup.
+	return chain.GetHeaderByNumber(prevCheckpointBlockNumber)
 }
 
 // Encode list of attestor numbers into bytes following format of Block.Attestors.
