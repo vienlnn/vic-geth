@@ -341,9 +341,7 @@ func (c *Posv) snapshot(chain consensus.ChainHeaderReader, number uint64, hash c
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if (number+c.config.Gap)%c.config.Epoch == 0 {
-			// log.Info("Loaded voting snapshot from disk", "number", number, "hash", hash)
 			if s, err := loadSnapshot(c.config, c.signatures, c.db, hash); err == nil {
-				// log.Info("Loaded checkpoint snapshot from disk", "number", number, "hash", hash)
 				snap = s
 				break
 			}

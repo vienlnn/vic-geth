@@ -2579,7 +2579,7 @@ func (bc *BlockChain) UpdateM1() error {
 
 	contracrAddress := bc.chainConfig.Viction.ValidatorContract
 	if contracrAddress == (common.Address{}) {
-		fmt.Errorf("Validator contract address is not set in chain config")
+		return fmt.Errorf("validator contract address is not set in chain config")
 	}
 
 	var candidates []common.Address
@@ -2588,7 +2588,7 @@ func (bc *BlockChain) UpdateM1() error {
 	// if can't get anything, request from contracts
 	stateDB, err := bc.State()
 	if err != nil {
-		fmt.Errorf("failed to get state at header root (block %v): %v", bc.CurrentHeader().Number, err)
+		return fmt.Errorf("failed to get state at header root (block %v): %v", bc.CurrentHeader().Number, err)
 	}
 	candidates = stateDB.VicGetCandidates(contracrAddress)
 
