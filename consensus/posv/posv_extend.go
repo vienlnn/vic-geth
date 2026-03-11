@@ -78,26 +78,29 @@ type PosvBackend interface {
 	PosvGetValidators(vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]common.Address, error)
 }
 
-// Check If the given block is a checkpoint block, return it, else return previous checkpoint block header.
-// GetCheckpointHeader returns the checkpoint header for the epoch that contains
+// GetCheckpointHeader returns the checkpoint header for the epoch containing
 // the given header. If the header itself is a checkpoint (number % epoch == 0)
-// it is returned directly. Otherwise the function walks backward through
-// parents (in-batch, not yet in DB) looking for the epoch boundary block,
-// and falls back to a canonical DB lookup if not found there.
-func GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) *types.Header {
+// it is returned directly. Otherwise it tries the canonical DB first (prior
+// epochs already committed), then falls back to the in-memory recentHeaders
+// cache which is populated by verifyHeaderWithCache as each checkpoint in the
+// current batch is successfully verified.
+func (c *Posv) GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader) *types.Header {
 	blockNumber := header.Number.Uint64()
 	if blockNumber%posvConfig.Epoch == 0 {
 		return header
 	}
 	prevCheckpointBlockNumber := blockNumber - (blockNumber % posvConfig.Epoch)
-	// Walk backward through parents (in-batch headers not yet in DB).
-	for i := len(parents) - 1; i >= 0; i-- {
-		if parents[i].Number.Uint64() == prevCheckpointBlockNumber {
-			return parents[i]
-		}
+
+	// Try canonical DB first (covers prior epochs already committed).
+	if h := chain.GetHeaderByNumber(prevCheckpointBlockNumber); h != nil {
+		return h
 	}
-	// Fall back to canonical DB lookup.
-	return chain.GetHeaderByNumber(prevCheckpointBlockNumber)
+	// Fall back to recently verified checkpoint headers (covers in-batch
+	// checkpoints not yet committed to DB).
+	if h, ok := c.recentsCheckPointHeaders.Get(prevCheckpointBlockNumber); ok {
+		return h.(*types.Header)
+	}
+	return nil
 }
 
 // Encode list of attestor numbers into bytes following format of Block.Attestors.

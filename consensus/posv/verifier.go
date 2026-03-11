@@ -32,6 +32,11 @@ func (c *Posv) verifyHeaderWithCache(chain consensus.ChainHeaderReader, header *
 	err := c.verifyHeader(chain, header, parents, seal)
 	if err == nil {
 		c.verifiedBlocks.Add(header.Hash(), true)
+		// Cache verified checkpoint headers so GetCheckpointHeader and verifyValidators
+		// can find them for subsequent in-batch headers before DB insertion.
+		if c.config != nil && header.Number.Uint64()%c.config.Epoch == 0 {
+			c.recentsCheckPointHeaders.Add(header.Number.Uint64(), header)
+		}
 	}
 	return err
 }
@@ -158,7 +163,25 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
 	number := header.Number.Uint64()
 	log.Debug("Verifying checkpoint validators", "number", number, "hash", header.Hash().Hex())
-	snap, err := c.snapshot(chain, header.Number.Uint64()-1, header.ParentHash, parents)
+
+	// Load snapshot at the gap block (checkpoint - Gap), where UpdateMasternodes
+	// stored the updated snapshot. Resolve the gap block hash from DB first,
+	// then fall back to the in-batch parents slice.
+	// Pass the parents slice to snapshot so it can walk backward through
+	// in-batch blocks if the gap block snapshot is not yet in c.recents.
+	gapBlockNumber := number - c.config.Gap
+	var gapBlockHash common.Hash
+	if gapHeader := chain.GetHeaderByNumber(gapBlockNumber); gapHeader != nil {
+		gapBlockHash = gapHeader.Hash()
+	} else {
+		for _, p := range parents {
+			if p.Number.Uint64() == gapBlockNumber {
+				gapBlockHash = p.Hash()
+				break
+			}
+		}
+	}
+	snap, err := c.snapshot(chain, gapBlockNumber, gapBlockHash, parents)
 	if err != nil {
 		return err
 	}
@@ -214,17 +237,21 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 		}
 		// if not matched, try to get validators from smart contract and verify again
 		if retryCount == 0 {
-			// Try gap block first, then walk forward up to number-1 if state is unavailable
+			// Try each block in [number-Gap, number-1]. For each candidate,
+			// check DB first then fall back to the in-batch parents slice.
 			var fetchErr error
+			var gapBlockHeader *types.Header
 			for gapBlockNumber := number - c.config.Gap; gapBlockNumber < number; gapBlockNumber++ {
-				gapBlockHeader := chain.GetHeaderByNumber(gapBlockNumber)
-				validators, fetchErr = c.backend.PosvGetValidators(chain.Config().Viction, gapBlockHeader, chain)
-				if fetchErr == nil && len(validators) > 0 {
-					log.Info("Validators from smart contract", "number", number, "gapBlockNumber", gapBlockNumber, "validators", validators)
+				gapBlockHeader = chain.GetHeaderByNumber(gapBlockNumber)
+				var vs []common.Address
+				vs, fetchErr = c.backend.PosvGetValidators(chain.Config().Viction, gapBlockHeader, chain)
+				if fetchErr == nil && len(vs) > 0 {
+					validators = vs
+					log.Info("Validators from smart contract", "checkpoint", number, "gapBlock", gapBlockNumber, "validators", validators)
 					break
 				}
 				log.Debug("PosvGetValidators failed or returned empty, trying next block",
-					"number", number, "gapBlockNumber", gapBlockNumber, "err", fetchErr)
+					"checkpoint", number, "gapBlockNumber", gapBlockNumber, "err", fetchErr)
 			}
 			if fetchErr != nil {
 				return fetchErr
@@ -255,7 +282,7 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 	}
 
 	var validators []common.Address
-	checkpointHeader := GetCheckpointHeader(c.config, header, chain, parents)
+	checkpointHeader := c.GetCheckpointHeader(c.config, header, chain)
 	if checkpointHeader == nil {
 		return fmt.Errorf("couldn't find checkpoint header")
 	}
@@ -272,7 +299,7 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 	} else {
 		parent = chain.GetHeader(header.ParentHash, number-1)
 	}
-	difficulty := c.calcDifficulty(creator, parent, chain, parents)
+	difficulty := c.calcDifficulty(creator, parent, chain)
 	if header.Number.Uint64() > 0 {
 		if header.Difficulty.Int64() != difficulty.Int64() {
 			return errInvalidDifficulty

@@ -2588,7 +2588,7 @@ func (bc *BlockChain) UpdateM1() error {
 	// if can't get anything, request from contracts
 	stateDB, err := bc.State()
 	if err != nil {
-		return fmt.Errorf("failed to get state at header root (block %v): %v", bc.CurrentHeader().Number, err)
+		return fmt.Errorf("failed to get state at current root (block %v): %v", bc.CurrentHeader().Number, err)
 	}
 	candidates = stateDB.VicGetCandidates(contracrAddress)
 

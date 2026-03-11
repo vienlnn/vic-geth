@@ -181,11 +181,12 @@ type Posv struct {
 	config *params.PosvConfig // Consensus engine configuration parameters
 	db     ethdb.Database     // Database to store and retrieve snapshot checkpoints
 
-	recents          *lru.ARCCache           // Snapshots for recent block to speed up reorgs
-	signatures       *lru.ARCCache           // Signatures of recent blocks to speed up mining
-	attestSignatures *lru.ARCCache           // Signatures of recent blocks to speed up mining
-	verifiedBlocks   *lru.ARCCache           // Status of recent blocks to speed up syncing
-	proposals        map[common.Address]bool // Current list of proposals we are pushing
+	recents                  *lru.ARCCache           // Snapshots for recent block to speed up reorgs
+	recentsCheckPointHeaders *lru.ARCCache           // Checkpoint headers for recent epochs to speed up syncing
+	signatures               *lru.ARCCache           // Signatures of recent blocks to speed up mining
+	attestSignatures         *lru.ARCCache           // Signatures of recent blocks to speed up mining
+	verifiedBlocks           *lru.ARCCache           // Status of recent blocks to speed up syncing
+	proposals                map[common.Address]bool // Current list of proposals we are pushing
 
 	signer common.Address  // Ethereum address of the signing key
 	signFn clique.SignerFn // Signer function to authorize hashes with
@@ -208,18 +209,21 @@ func New(config *params.PosvConfig, db ethdb.Database) *Posv {
 	// Allocate the snapshot caches and create the engine
 	BlockSigners, _ := lru.New(blockSignersCacheLimit)
 	recents, _ := lru.NewARC(inmemorySnapshots)
+
 	signatures, _ := lru.NewARC(inmemorySnapshots)
 	attestSignatures, _ := lru.NewARC(inmemorySnapshots)
+	recentsCheckPointHeaders, _ := lru.NewARC(inmemorySnapshots)
 	verifiedBlocks, _ := lru.NewARC(inmemorySnapshots)
 	return &Posv{
-		config:           &conf,
-		db:               db,
-		BlockSigners:     BlockSigners,
-		recents:          recents,
-		signatures:       signatures,
-		verifiedBlocks:   verifiedBlocks,
-		attestSignatures: attestSignatures,
-		proposals:        make(map[common.Address]bool),
+		config:                   &conf,
+		db:                       db,
+		BlockSigners:             BlockSigners,
+		recents:                  recents,
+		recentsCheckPointHeaders: recentsCheckPointHeaders,
+		signatures:               signatures,
+		verifiedBlocks:           verifiedBlocks,
+		attestSignatures:         attestSignatures,
+		proposals:                make(map[common.Address]bool),
 	}
 }
 
@@ -310,8 +314,8 @@ func (c *Posv) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	return c.verifyHeaderWithCache(chain, header, nil, seal)
 }
 
-func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) *big.Int {
-	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, chain, parents)
+func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) *big.Int {
+	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, chain)
 	if err == nil {
 		distance := Distance(currentIndex, parentIndex, validatorCount)
 		return big.NewInt(int64(validatorCount - distance + 1))
@@ -330,8 +334,8 @@ func Distance(currentIndex, parentIndex, validatorCount int) int {
 
 // Check if the signer is inturn to mint current block. Also return context of the check including:
 // currentIndex, parentIndex, validatorCount.
-func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) (bool, int, int, int, error) {
-	checkpointHeader := GetCheckpointHeader(c.config, parent, chain, parents)
+func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) (bool, int, int, int, error) {
+	checkpointHeader := c.GetCheckpointHeader(c.config, parent, chain)
 	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
 	validatorsCount := len(validators)
 	if validatorsCount == 0 {
@@ -395,7 +399,7 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	}
 
 	// Set the correct difficulty using the parent header fetched earlier
-	header.Difficulty = c.calcDifficulty(c.signer, parent, chain, nil)
+	header.Difficulty = c.calcDifficulty(c.signer, parent, chain)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < ExtraVanity {
@@ -581,7 +585,7 @@ func (c *Posv) Seal(chain consensus.ChainHeaderReader, block *types.Block, resul
 // that a new block should have based on the previous blocks in the chain and the
 // current signer.
 func (c *Posv) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
-	return c.calcDifficulty(c.signer, parent, chain, nil)
+	return c.calcDifficulty(c.signer, parent, chain)
 }
 
 // VerifyUncles implements consensus.Engine, always returning an error for any
@@ -630,34 +634,50 @@ func (c *Posv) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
 
+	// chainWithCurrentBlock is satisfied by *core.BlockChain, whose CurrentBlock()
+	// only advances after the full block (with state trie) has been committed.
+	// *core.HeaderChain also satisfies the shape but returns nil, meaning no
+	// full block / state is available in that path (downloader header pre-validation).
+	type chainWithCurrentBlock interface {
+		CurrentBlock() *types.Block
+	}
+
 	go func() {
 		for i, header := range headers {
 			number := header.Number.Uint64()
-			// Checkpoint block: PosvGetValidators reads validator set from the state
-			// at the gap block (checkpoint - Gap). Wait until that block is committed
-			// before attempting verification.
+			// For checkpoint blocks, PosvGetPenalties / PosvGetValidators read state
+			// at the gap block (checkpoint - Gap).  We must not proceed until that
+			// state is committed to the DB.
 			if c.config != nil && number > 0 && number%c.config.Epoch == 0 {
 				requiredBlock := number - c.config.Gap
-				lastLog := time.Now()
-				for {
-					select {
-					case <-abort:
-						return
-					default:
-					}
-					if chain.CurrentHeader().Number.Uint64() >= requiredBlock {
-						break
-					}
-					if time.Since(lastLog) >= 5*time.Second {
-						log.Debug("VerifyHeaders: waiting for gap block before verifying checkpoint",
-							"checkpoint", number, "requiredBlock", requiredBlock,
-							"currentBlock", chain.CurrentHeader().Number.Uint64())
-						lastLog = time.Now()
-					}
-					select {
-					case <-abort:
-						return
-					case <-time.After(200 * time.Millisecond):
+				if cbc, ok := chain.(chainWithCurrentBlock); ok {
+					lastLog := time.Now()
+					for {
+						select {
+						case <-abort:
+							return
+						default:
+						}
+						cb := cbc.CurrentBlock()
+						if cb == nil {
+							// Header-only chain: state never committed here.
+							// Skip the wait; verifyValidators handles missing state.
+							break
+						}
+						if cb.NumberU64() >= requiredBlock {
+							break
+						}
+						if time.Since(lastLog) >= 5*time.Second {
+							log.Debug("VerifyHeaders: waiting for gap block state before verifying checkpoint",
+								"checkpoint", number, "requiredBlock", requiredBlock,
+								"currentBlock", cb.NumberU64())
+							lastLog = time.Now()
+						}
+						select {
+						case <-abort:
+							return
+						case <-time.After(200 * time.Millisecond):
+						}
 					}
 				}
 			}
