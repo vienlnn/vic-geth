@@ -155,8 +155,14 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 	if header == nil {
 		return []common.Address{}, nil
 	}
+	// Guard against being called before eth.blockchain is assigned (e.g. during
+	// NewBlockChain's internal VerifyHeader when SetBackend was called too early).
+	bc := s.BlockChain()
+	if bc == nil {
+		return []common.Address{}, fmt.Errorf("blockchain not initialized (block %v)", header.Number)
+	}
 
-	state, err := s.BlockChain().StateAt(header.Root)
+	state, err := bc.StateAt(header.Root)
 	if err != nil {
 		return []common.Address{}, fmt.Errorf("failed to get state at header root (block %v): %v", header.Number, err)
 	}

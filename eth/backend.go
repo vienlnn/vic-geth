@@ -140,17 +140,6 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 		p2pServer:         stack.Server(),
 	}
 
-	// Set PosvBackend if engine is Posv
-	if chainConfig.Posv != nil {
-		if posvEngine, ok := eth.engine.(*posv.Posv); ok {
-			// Set Ethereum instance as PosvBackend (implements PosvGetEpochReward)
-			posvEngine.SetBackend(eth)
-			log.Info("PosvBackend set on Posv engine")
-		} else {
-			log.Warn("Posv config present but engine is not Posv type", "engineType", fmt.Sprintf("%T", eth.engine))
-		}
-	}
-
 	bcVersion := rawdb.ReadDatabaseVersion(chainDb)
 	var dbVer = "<nil>"
 	if bcVersion != nil {
@@ -187,6 +176,17 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, chainConfig, eth.engine, vmConfig, eth.shouldPreserve, &config.TxLookupLimit)
 	if err != nil {
 		return nil, err
+	}
+	// Set PosvBackend now that eth.blockchain is fully initialised.
+	// Must be done AFTER NewBlockChain returns so that eth.blockchain is non-nil
+	// when NewBlockChain's internal VerifyHeader call triggers verifyValidators.
+	if chainConfig.Posv != nil {
+		if posvEngine, ok := eth.engine.(*posv.Posv); ok {
+			posvEngine.SetBackend(eth)
+			log.Info("PosvBackend set on Posv engine")
+		} else {
+			log.Warn("Posv config present but engine is not Posv type", "engineType", fmt.Sprintf("%T", eth.engine))
+		}
 	}
 	// Rewind the chain in case of an incompatible config upgrade.
 	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
