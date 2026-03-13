@@ -157,12 +157,11 @@ type Posv struct {
 	config *params.PosvConfig // Consensus engine configuration parameters
 	db     ethdb.Database     // Database to store and retrieve snapshot checkpoints
 
-	recents                  *lru.ARCCache           // Snapshots for recent block to speed up reorgs
-	recentsCheckPointHeaders *lru.ARCCache           // Checkpoint headers for recent epochs to speed up syncing
-	signatures               *lru.ARCCache           // Signatures of recent blocks to speed up mining
-	attestSignatures         *lru.ARCCache           // Signatures of recent blocks to speed up mining
-	verifiedBlocks           *lru.ARCCache           // Status of recent blocks to speed up syncing
-	proposals                map[common.Address]bool // Current list of proposals we are pushing
+	recents          *lru.ARCCache           // Snapshots for recent block to speed up reorgs
+	signatures       *lru.ARCCache           // Signatures of recent blocks to speed up mining
+	attestSignatures *lru.ARCCache           // Signatures of recent blocks to speed up mining
+	verifiedBlocks   *lru.ARCCache           // Status of recent blocks to speed up syncing
+	proposals        map[common.Address]bool // Current list of proposals we are pushing
 
 	signer common.Address  // Ethereum address of the signing key
 	signFn clique.SignerFn // Signer function to authorize hashes with
@@ -188,18 +187,16 @@ func New(config *params.PosvConfig, db ethdb.Database) *Posv {
 
 	signatures, _ := lru.NewARC(inmemorySnapshots)
 	attestSignatures, _ := lru.NewARC(inmemorySnapshots)
-	recentsCheckPointHeaders, _ := lru.NewARC(inmemorySnapshots)
 	verifiedBlocks, _ := lru.NewARC(inmemorySnapshots)
 	return &Posv{
-		config:                   &conf,
-		db:                       db,
-		BlockSigners:             BlockSigners,
-		recents:                  recents,
-		recentsCheckPointHeaders: recentsCheckPointHeaders,
-		signatures:               signatures,
-		verifiedBlocks:           verifiedBlocks,
-		attestSignatures:         attestSignatures,
-		proposals:                make(map[common.Address]bool),
+		config:           &conf,
+		db:               db,
+		BlockSigners:     BlockSigners,
+		recents:          recents,
+		signatures:       signatures,
+		verifiedBlocks:   verifiedBlocks,
+		attestSignatures: attestSignatures,
+		proposals:        make(map[common.Address]bool),
 	}
 }
 
@@ -290,8 +287,8 @@ func (c *Posv) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	return c.verifyHeaderWithCache(chain, header, nil, seal)
 }
 
-func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) *big.Int {
-	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, chain)
+func (c *Posv) calcDifficulty(signer common.Address, parent *types.Header, validators []common.Address) *big.Int {
+	_, currentIndex, parentIndex, validatorCount, err := c.IsMyTurn(signer, parent, validators)
 	if err == nil {
 		distance := Distance(currentIndex, parentIndex, validatorCount)
 		return big.NewInt(int64(validatorCount - distance + 1))
@@ -310,9 +307,7 @@ func Distance(currentIndex, parentIndex, validatorCount int) int {
 
 // Check if the signer is inturn to mint current block. Also return context of the check including:
 // currentIndex, parentIndex, validatorCount.
-func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain consensus.ChainHeaderReader) (bool, int, int, int, error) {
-	checkpointHeader := c.GetCheckpointHeader(c.config, parent, chain)
-	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, validators []common.Address) (bool, int, int, int, error) {
 	validatorsCount := len(validators)
 	if validatorsCount == 0 {
 		return false, -1, -1, 0, errEmptyValidators
@@ -335,7 +330,10 @@ func (c *Posv) IsMyTurn(signer common.Address, parent *types.Header, chain conse
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
 func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header) error {
-	chain := chainH.(consensus.ChainReader)
+	chain, ok := chainH.(consensus.ChainReader)
+	if !ok {
+		log.Error("No chain reader provided for checkpoint preparation")
+	}
 
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)
 	header.Coinbase = common.Address{}
@@ -376,7 +374,9 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	c.lock.RUnlock()
 
 	// Set the correct difficulty using the parent header fetched earlier
-	header.Difficulty = c.calcDifficulty(signer, parent, chain)
+	checkpointHeader := GetCheckpointHeader(c.config, parent, chain, nil)
+	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+	header.Difficulty = c.calcDifficulty(signer, parent, validators)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < ExtraVanity {
@@ -456,7 +456,11 @@ func (c *Posv) Finalize(chain consensus.ChainHeaderReader, header *types.Header,
 
 		// Apply epoch rewards only at checkpoint blocks, skipping the first checkpoint (e.g. 900).
 		if epoch > 0 && number%epoch == 0 && number > epoch {
-			chainReader := chain.(consensus.ChainReader)
+			chainReader, ok := chain.(consensus.ChainReader)
+			if !ok {
+				log.Error("No chain reader provided for epoch reward distribution")
+			}
+
 			epochReward, err := c.backend.PosvGetEpochReward(c, config, config.Posv, config.Viction, header, chainReader, state, log.Root())
 			if err != nil {
 				log.Warn("Finalize: epoch reward failed", "block", number, "err", err)
@@ -562,7 +566,9 @@ func (c *Posv) Seal(chain consensus.ChainHeaderReader, block *types.Block, resul
 // that a new block should have based on the previous blocks in the chain and the
 // current signer.
 func (c *Posv) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
-	return c.calcDifficulty(c.signer, parent, chain)
+	checkpointHeader := GetCheckpointHeader(c.config, parent, chain, nil)
+	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+	return c.calcDifficulty(c.signer, parent, validators)
 }
 
 // VerifyUncles implements consensus.Engine, always returning an error for any

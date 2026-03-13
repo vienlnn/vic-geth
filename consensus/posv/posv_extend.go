@@ -84,7 +84,7 @@ type PosvBackend interface {
 // epochs already committed), then falls back to the in-memory recentHeaders
 // cache which is populated by verifyHeaderWithCache as each checkpoint in the
 // current batch is successfully verified.
-func (c *Posv) GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader) *types.Header {
+func GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.Header, chain consensus.ChainHeaderReader, parents []*types.Header) *types.Header {
 	blockNumber := header.Number.Uint64()
 	if blockNumber%posvConfig.Epoch == 0 {
 		return header
@@ -95,11 +95,12 @@ func (c *Posv) GetCheckpointHeader(posvConfig *params.PosvConfig, header *types.
 	if h := chain.GetHeaderByNumber(prevCheckpointBlockNumber); h != nil {
 		return h
 	}
-	// Fall back to recently verified checkpoint headers (covers in-batch
-	// checkpoints not yet committed to DB).
-	if h, ok := c.recentsCheckPointHeaders.Get(prevCheckpointBlockNumber); ok {
-		return h.(*types.Header)
+	for _, parent := range parents {
+		if parent.Number.Uint64() == prevCheckpointBlockNumber {
+			return parent
+		}
 	}
+
 	return nil
 }
 

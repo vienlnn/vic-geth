@@ -35,11 +35,6 @@ func (c *Posv) verifyHeaderWithCache(chain consensus.ChainHeaderReader, header *
 	err := c.verifyHeader(chain, header, parents, seal)
 	if err == nil {
 		c.verifiedBlocks.Add(header.Hash(), true)
-		// Cache verified checkpoint headers so GetCheckpointHeader and verifyValidators
-		// can find them for subsequent in-batch headers before DB insertion.
-		if c.config != nil && header.Number.Uint64()%c.config.Epoch == 0 {
-			c.recentsCheckPointHeaders.Add(header.Number.Uint64(), header)
-		}
 	}
 	return err
 }
@@ -133,11 +128,7 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 
 	// Retrieve the snapshot needed to verify this header and cache it
 	var parent *types.Header
-	if len(parents) > 0 {
-		parent = parents[len(parents)-1]
-	} else {
-		parent = chain.GetHeader(header.ParentHash, number-1)
-	}
+	parent = resolveParent(chain, header, parents)
 	if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return consensus.ErrUnknownAncestor
 	}
@@ -162,6 +153,15 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 	// All basic checks passed, verify the seal and return
 	return c.verifySeal(chain, header, parents, seal)
 
+}
+
+// resolveParent returns the immediate parent of header, preferring the
+// in-batch parents slice over a DB lookup.
+func resolveParent(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header) *types.Header {
+	if len(parents) > 0 {
+		return parents[len(parents)-1]
+	}
+	return chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
 }
 
 func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
@@ -271,7 +271,10 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 // verifySeal checks whether the signature contained in the header satisfies the
 // consensus protocol requirements.
 func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Header, parents []*types.Header, seal bool) error {
-	chain := chainH.(consensus.ChainReader)
+	chain, ok := chainH.(consensus.ChainReader)
+	if !ok {
+		log.Error("No chain reader provided for checkpoint verification")
+	}
 	// Verifying the genesis block is not supported
 	number := header.Number.Uint64()
 	if number == 0 {
@@ -281,29 +284,34 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 		return errBackendNotSet
 	}
 
-	var validators []common.Address
-	checkpointHeader := c.GetCheckpointHeader(c.config, header, chain)
-	if checkpointHeader == nil {
-		return fmt.Errorf("couldn't find checkpoint header")
-	}
-	validators = ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+	// Resolve the block immediately before header: prefer in-batch slice, fall back to DB.
+	prevHeader := resolveParent(chain, header, parents)
+
+	// Recover the block creator from the header seal.
 	creator, err := ecrecover(header, c.signatures)
 	if err != nil {
 		log.Debug("Failed to recover signer", "number", number, "err", err)
 		return err
 	}
 
-	var parent *types.Header
-	if len(parents) > 0 {
-		parent = parents[len(parents)-1]
-	} else {
-		parent = chain.GetHeader(header.ParentHash, number-1)
+	// Checkpoint for the current epoch: used for authorization and attestor checks.
+	checkpointHeader := GetCheckpointHeader(c.config, header, chain, parents)
+	if checkpointHeader == nil {
+		return fmt.Errorf("couldn't find checkpoint header for block %d", number)
 	}
-	difficulty := c.calcDifficulty(creator, parent, chain)
-	if header.Number.Uint64() > 0 {
-		if header.Difficulty.Int64() != difficulty.Int64() {
-			return errInvalidDifficulty
-		}
+	validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+
+	// Checkpoint for the previous block's epoch: used for difficulty calculation.
+	// At an epoch boundary prevHeader belongs to the prior epoch, so its checkpoint
+	// differs from the current one.
+	prevCheckpointHeader := GetCheckpointHeader(c.config, prevHeader, chain, parents)
+	if prevCheckpointHeader == nil {
+		return fmt.Errorf("couldn't find checkpoint header for parent of block %d", number)
+	}
+	prevValidators := ExtractValidatorsFromCheckpointHeader(prevCheckpointHeader)
+
+	if header.Difficulty.Int64() != c.calcDifficulty(creator, prevHeader, prevValidators).Int64() {
+		return errInvalidDifficulty
 	}
 
 	// Retrieve the snapshot needed to verify this header and cache it
