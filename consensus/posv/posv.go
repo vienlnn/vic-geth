@@ -121,6 +121,9 @@ var (
 	errRecentlySigned = errors.New("recently signed")
 
 	errEmptyValidators = errors.New("validators is empty")
+
+	// errBackendNotSet is returned when consensus engine's backend is not set.
+	errBackendNotSet = errors.New("consensus engine backend not set")
 )
 
 // sigHash returns the hash which is used as input for the proof-of-stake-voting
@@ -237,7 +240,7 @@ func (c *Posv) SetBackend(backend PosvBackend) {
 // This is a public method to access validators from the backend.
 func (c *Posv) GetValidators(vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]common.Address, error) {
 	if c.backend == nil {
-		return nil, fmt.Errorf("posv backend not set")
+		return nil, errBackendNotSet
 	}
 	return c.backend.PosvGetValidators(vicConfig, header, chain)
 }

@@ -49,6 +49,11 @@ func (c *Posv) verifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	if header.Number == nil {
 		return errUnknownBlock
 	}
+
+	if c.backend == nil {
+		return errBackendNotSet
+	}
+
 	number := header.Number.Uint64()
 
 	now := time.Now()
@@ -185,10 +190,6 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	if err != nil {
 		return err
 	}
-
-	if c.backend == nil {
-		return nil
-	}
 	validators := snap.GetSigners()
 
 	retryCount := 0
@@ -278,7 +279,7 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 		return errUnknownBlock
 	}
 	if c.backend == nil {
-		return nil
+		return errBackendNotSet
 	}
 
 	var validators []common.Address
