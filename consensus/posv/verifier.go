@@ -25,6 +25,9 @@ var (
 // performs full verification if not found. Successfully verified headers are
 // cached to avoid redundant checks.
 func (c *Posv) verifyHeaderWithCache(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header, seal bool) error {
+	if header == nil {
+		return errUnknownBlock
+	}
 	_, check := c.verifiedBlocks.Get(header.Hash())
 	if check {
 		return nil
@@ -60,7 +63,7 @@ func (c *Posv) verifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	nowUnix := now.Unix()
 
 	if seal {
-		if header.Number.Uint64() > c.config.Epoch && len(header.Attestor) == 0 {
+		if header.Number.Uint64() > c.config.Epoch && len(header.Attestor) != ExtraSeal {
 			return consensus.ErrFailValidatorSignature
 		}
 		// Don't waste time checking blocks from the future
@@ -145,12 +148,8 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 
 	// If the block is a checkpoint block, verify the signer list
 	if number%c.config.Epoch == 0 {
-		if header == nil {
-			log.Error("Failed to retrieve parent header for checkpoint verification")
-		}
-
-		chain := chain.(consensus.ChainReader)
-		if chain == nil {
+		chain, ok := chain.(consensus.ChainReader)
+		if !ok {
 			log.Error("No chain reader provided for checkpoint verification")
 		}
 		err := c.verifyValidators(chain, header, parents)

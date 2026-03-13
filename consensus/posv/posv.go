@@ -126,33 +126,6 @@ var (
 	errBackendNotSet = errors.New("consensus engine backend not set")
 )
 
-// sigHash returns the hash which is used as input for the proof-of-stake-voting
-// signing. It is the hash of the entire header apart from the 65 byte signature
-// contained at the end of the extra data.
-func sigHash(header *types.Header) (hash common.Hash) {
-	hasher := sha3.NewLegacyKeccak256()
-
-	rlp.Encode(hasher, []interface{}{
-		header.ParentHash,
-		header.UncleHash,
-		header.Coinbase,
-		header.Root,
-		header.TxHash,
-		header.ReceiptHash,
-		header.Bloom,
-		header.Difficulty,
-		header.Number,
-		header.GasLimit,
-		header.GasUsed,
-		header.Time,
-		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
-		header.MixDigest,
-		header.Nonce,
-	})
-	hasher.Sum(hash[:0])
-	return hash
-}
-
 // ecrecover extracts the Ethereum account address from a signed header.
 func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, error) {
 	// If the signature's already cached, return that
@@ -167,7 +140,7 @@ func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, er
 	signature := header.Extra[len(header.Extra)-ExtraSeal:]
 
 	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(sigHash(header).Bytes(), signature)
+	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -375,9 +348,8 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	if err != nil {
 		return err
 	}
-
+	c.lock.RLock()
 	if number%c.config.Epoch != 0 {
-		c.lock.RLock()
 		// Gather all the proposals that make sense voting on
 		addresses := make([]common.Address, 0, len(c.proposals))
 		for address, authorize := range c.proposals {
@@ -394,15 +366,17 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 				copy(header.Nonce[:], nonceDropVote)
 			}
 		}
-		c.lock.RUnlock()
 	}
 	parent := chain.GetHeader(header.ParentHash, number-1)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
 	}
+	// Copy signer protected by mutex to avoid race condition
+	signer := c.signer
+	c.lock.RUnlock()
 
 	// Set the correct difficulty using the parent header fetched earlier
-	header.Difficulty = c.calcDifficulty(c.signer, parent, chain)
+	header.Difficulty = c.calcDifficulty(signer, parent, chain)
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < ExtraVanity {
