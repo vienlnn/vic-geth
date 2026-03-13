@@ -245,7 +245,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	contractCreation := msg.To() == nil
 
 	// Check clauses 4-5, subtract intrinsic gas if everything is correct
-	gas, err := IntrinsicGas(st.data, contractCreation, homestead, istanbul)
+	// On Viction (Posv) networks, EIP-2028 data gas reduction is intentionally not applied:
+	isEIP2028 := istanbul && st.evm.ChainConfig().Posv == nil
+	gas, err := IntrinsicGas(st.data, contractCreation, homestead, isEIP2028)
 	if err != nil {
 		return nil, err
 	}
