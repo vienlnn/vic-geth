@@ -6,11 +6,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/crypto"
-)
-
-var (
-	ValidatorsStateSlot = big.NewInt(1)
 )
 
 type VictionConfig struct {
@@ -274,8 +269,4 @@ func (c *VictionConfig) GetVictionBypassBalance(blockNum uint64, addr common.Add
 		}
 	}
 	return nil
-}
-
-func (c *VictionConfig) GetValidatorOwnerSlot(candidate common.Address) common.Hash {
-	return crypto.Keccak256Hash(candidate.Hash().Bytes(), common.BigToHash(ValidatorsStateSlot).Bytes())
 }

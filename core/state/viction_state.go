@@ -4,6 +4,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const SignMethodHex = "e341eaa4"
@@ -68,4 +69,9 @@ func (statedb *StateDB) VicGetValidatorVoterCap(contractAddress common.Address, 
 	voterElemSlot := StorageLocationOfMappingElement(votersMappingSlot, voter.Hash().Bytes())
 
 	return new(big.Int).SetBytes(statedb.GetState(contractAddress, voterElemSlot.Hash()).Bytes())
+}
+
+func GetValidatorOwnerSlot(candidate common.Address) common.Hash {
+	validatorMappingSlot := vicValidatorStorageMap["validatorsState"]
+	return crypto.Keccak256Hash(candidate.Hash().Bytes(), common.BigToHash(big.NewInt(int64(validatorMappingSlot))).Bytes())
 }

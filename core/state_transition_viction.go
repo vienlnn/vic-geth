@@ -101,7 +101,7 @@ func (st *StateTransition) applyTransactionFee() {
 	}
 
 	// After TIPTRC21Fee fork: route fee to the registered owner of the validator.
-	slot := victionCfg.GetValidatorOwnerSlot(st.evm.Context.Coinbase)
+	slot := state.GetValidatorOwnerSlot(st.evm.Context.Coinbase)
 	ownerHash := st.state.GetState(victionCfg.ValidatorContract, slot)
 	owner := common.BytesToAddress(ownerHash.Bytes())
 	if owner != (common.Address{}) {
