@@ -63,3 +63,48 @@ func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 	feeCapKey := state.GetStorageKeyForMapping(addr.Hash(), slotTokensState)
 	st.state.SetState(st.evm.ChainConfig().Viction.VRC25Contract, feeCapKey, common.BigToHash(newFeeCap))
 }
+
+// applyTransactionFee distributes the transaction fee to the correct recipient.
+//
+// After the TIPTRC21Fee fork the fee goes to the validator-owner stored on-chain
+// inside VictionConfig.ValidatorContract. Before that fork, or when no owner is
+// registered, the fee falls back to the block coinbase.
+//
+// When the Atlas fork is active and this is a VRC25-sponsored transaction the fee
+// amount is re-derived using VictionConfig.VRC25GasPrice (which matches the price
+// already used in buyGas / refundGas) instead of the regular gasPrice.
+func (st *StateTransition) applyTransactionFee() {
+	victionCfg := st.evm.ChainConfig().Viction
+	blockNum := st.evm.Context.BlockNumber
+
+	txFee := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+
+	if victionCfg == nil {
+		// Non-Viction chain: fee always goes to the coinbase.
+		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
+		return
+	}
+
+	// After Atlas HF, VRC25-sponsored transactions carry a different gas price that
+	// was set on st.gasPrice in vrc25BuyGas. However, if IsAtlas and we are a VRC25
+	// transaction the gasPrice was already overridden to VRC25GasPrice, so txFee is
+	// already correct. Explicitly recalculate only when VRC25GasPrice is set and the
+	// current gasPrice could have been overridden (i.e., IsAtlas is active).
+	if st.evm.ChainConfig().IsAtlas(blockNum) && st.isVRC25Transaction() && victionCfg.VRC25GasPrice != nil {
+		txFee = new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), (*big.Int)(victionCfg.VRC25GasPrice))
+	}
+
+	// Before TIPTRC21Fee fork: fee goes to the block coinbase.
+	if !st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
+		return
+	}
+
+	// After TIPTRC21Fee fork: route fee to the registered owner of the validator.
+	slot := victionCfg.GetValidatorOwnerSlot(st.evm.Context.Coinbase)
+	ownerHash := st.state.GetState(victionCfg.ValidatorContract, slot)
+	owner := common.BytesToAddress(ownerHash.Bytes())
+	if owner != (common.Address{}) {
+		st.state.AddBalance(owner, txFee)
+	}
+}
