@@ -23,7 +23,6 @@ import (
 	"io"
 	"math/big"
 	mrand "math/rand"
-	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -2603,7 +2602,7 @@ func (bc *BlockChain) UpdateM1() error {
 	}
 	if len(ms) == 0 {
 		log.Error("No masternode found. Stopping node")
-		os.Exit(1)
+		return fmt.Errorf("no masternode found")
 	} else {
 		header := bc.CurrentHeader()
 		if bc.Config().IsAtlas(header.Number) {

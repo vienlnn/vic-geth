@@ -48,10 +48,6 @@ func (c *Posv) verifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 		return errUnknownBlock
 	}
 
-	if c.backend == nil {
-		return errBackendNotSet
-	}
-
 	number := header.Number.Uint64()
 
 	now := time.Now()
@@ -142,6 +138,7 @@ func (c *Posv) verifyCascadingFields(chain consensus.ChainHeaderReader, header *
 		chain, ok := chain.(consensus.ChainReader)
 		if !ok {
 			log.Error("No chain reader provided for checkpoint verification")
+			return fmt.Errorf("no chain reader provided for checkpoint verification")
 		}
 		err := c.verifyValidators(chain, header, parents)
 
@@ -165,6 +162,9 @@ func resolveParent(chain consensus.ChainHeaderReader, header *types.Header, pare
 }
 
 func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Header, parents []*types.Header) error {
+	if c.backend == nil {
+		return errBackendNotSet
+	}
 	number := header.Number.Uint64()
 	log.Debug("Verifying checkpoint validators", "number", number, "hash", header.Hash().Hex())
 
@@ -274,6 +274,7 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 	chain, ok := chainH.(consensus.ChainReader)
 	if !ok {
 		log.Error("No chain reader provided for checkpoint verification")
+		return fmt.Errorf("no chain reader provided for checkpoint verification")
 	}
 	// Verifying the genesis block is not supported
 	number := header.Number.Uint64()

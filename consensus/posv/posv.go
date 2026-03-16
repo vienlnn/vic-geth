@@ -333,6 +333,7 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	chain, ok := chainH.(consensus.ChainReader)
 	if !ok {
 		log.Error("No chain reader provided for checkpoint preparation")
+		return fmt.Errorf("no chain reader provided for checkpoint preparation")
 	}
 
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)

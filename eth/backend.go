@@ -184,8 +184,13 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 		if posvEngine, ok := eth.engine.(*posv.Posv); ok {
 			posvEngine.SetBackend(eth)
 			log.Info("PosvBackend set on Posv engine")
+			if head := eth.blockchain.CurrentHeader(); head != nil {
+				if err := eth.engine.VerifyHeader(eth.blockchain, head, true); err != nil {
+					log.Crit("Head invalid after full POSV check", "number", head.Number, "hash", head.Hash(), "err", err)
+				}
+			}
 		} else {
-			log.Warn("Posv config present but engine is not Posv type", "engineType", fmt.Sprintf("%T", eth.engine))
+			return nil, fmt.Errorf("posv config present but engine is %T, expected *posv.Posv", eth.engine)
 		}
 	}
 	// Rewind the chain in case of an incompatible config upgrade.
