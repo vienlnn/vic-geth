@@ -142,7 +142,7 @@ func IsVicBlockSingingTx(tx types.Transaction, vicConfig *params.VictionConfig) 
 	data := tx.Data()
 	method := common.Bytes2Hex(data[0:4])
 
-	if method != SignMethodHex && len(data) >= 68 {
+	if method != SignMethodHex || len(data) >= 68 {
 		return false
 	}
 

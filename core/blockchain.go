@@ -1739,7 +1739,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 	it := newInsertIterator(chain, results, bc.validator)
 
 	block, err := it.next()
-	log.Info("Inserting block", "number", block.Number())
 
 	// Left-trim all the known blocks
 	if err == ErrKnownBlock {
