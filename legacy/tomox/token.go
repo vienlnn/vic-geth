@@ -6,7 +6,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/contracts/tomox/contract"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -26,7 +25,7 @@ func GetTokenAbi() (*abi.ABI, error) {
 
 // RunContract executes a read-only smart contract call using the EVM directly.
 // This replaces the legacy victionchain approach that used SimulatedBackend.CallContractWithState.
-func RunContract(chain consensus.ChainContext, statedb *state.StateDB, contractAddr common.Address, abi *abi.ABI, method string, args ...interface{}) (interface{}, error) {
+func RunContract(chain tradingstate.ChainContext, statedb *state.StateDB, contractAddr common.Address, abi *abi.ABI, method string, args ...interface{}) (interface{}, error) {
 	input, err := abi.Pack(method, args...)
 	if err != nil {
 		return nil, err
@@ -70,7 +69,7 @@ func RunContract(chain consensus.ChainContext, statedb *state.StateDB, contractA
 	return unpackResult, nil
 }
 
-func (tomox *TomoX) GetTokenDecimal(chain consensus.ChainContext, statedb *state.StateDB, tokenAddr common.Address) (*big.Int, error) {
+func (tomox *TomoX) GetTokenDecimal(chain tradingstate.ChainContext, statedb *state.StateDB, tokenAddr common.Address) (*big.Int, error) {
 	if tokenDecimal, ok := tomox.tokenDecimalCache.Get(tokenAddr); ok {
 		return tokenDecimal.(*big.Int), nil
 	}

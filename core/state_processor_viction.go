@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -28,7 +27,7 @@ type TradingEngine interface {
 	CommitOrder(
 		header *types.Header,
 		coinbase common.Address,
-		chain consensus.ChainContext,
+		chain tradingstate.ChainContext,
 		statedb *state.StateDB,
 		tradingStateDB *tradingstate.TradingStateDB,
 		orderBook common.Hash,
@@ -398,7 +397,6 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	txLog.Address = *tx.To()
 	txLog.BlockNumber = header.Number.Uint64()
 	statedb.AddLog(txLog)
-	// receipt.Logs = statedb.GetLogs(tx.Hash())
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 
 	return true, receipt, 0, nil, nil
