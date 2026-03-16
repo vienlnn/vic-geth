@@ -629,9 +629,10 @@ func (c *Posv) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types
 	go func() {
 		for i, header := range headers {
 			number := header.Number.Uint64()
-			// For checkpoint blocks, PosvGetPenalties / PosvGetValidators read state
-			// at the gap block (checkpoint - Gap).  We must not proceed until that
-			// state is committed to the DB.
+			// For checkpoint blocks, PosvGetPenalties / PosvGetValidators need to read
+			// the chain state at the gap block (i.e. checkpointNumber - 1). We must wait
+			// until that block and its state are fully committed to the DB before verifying
+			// the checkpoint header.
 			if c.config != nil && number > 0 && number%c.config.Epoch == 0 {
 				requiredBlock := number - 1
 				if cbc, ok := chain.(chainWithCurrentBlock); ok {

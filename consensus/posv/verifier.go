@@ -187,7 +187,14 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	}
 	snap, err := c.snapshot(chain, gapBlockNumber, gapBlockHash, parents)
 	if err != nil {
-		return err
+		// Fallback: try to get snapshot at parent block
+		fallbackSnap, fallbackErr := c.snapshot(chain, number-1, header.ParentHash, parents)
+		if fallbackErr != nil {
+			// Both ways failed, return error
+			return fallbackErr
+		}
+		// Use snapshot fallback, assign it to snap and continue processing below
+		snap = fallbackSnap
 	}
 	validators := snap.GetSigners()
 

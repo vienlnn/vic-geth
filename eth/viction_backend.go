@@ -140,6 +140,7 @@ func IsVicBlockSingingTx(tx types.Transaction, vicConfig *params.VictionConfig) 
 	}
 	data := tx.Data()
 	// 4 (selector) + 32 (uint256 _blockNumber) + 32 (bytes32 _blockHash)
+	// data may contain additional data, so we need to check if it's at least 68 bytes
 	if len(data) < 68 {
 		return false
 	}
