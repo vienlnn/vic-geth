@@ -129,7 +129,7 @@ func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, po
 	if config.IsTIPSigning(header.Number) {
 		return viction.PenalizeValidatorsTIPSigning(c, config, posvConfig, vicConfig, header, chain)
 	}
-	return viction.PenalizeValidatorsDefault(s.BlockChain(), c, config, posvConfig, vicConfig, header)
+	return viction.PenalizeValidatorsDefault(c, config, posvConfig, vicConfig, header, chain)
 }
 
 // Check a transaction is Viction BlockSign transaction.
@@ -138,14 +138,15 @@ func IsVicBlockSingingTx(tx types.Transaction, vicConfig *params.VictionConfig) 
 	if toAddr == nil || *toAddr != vicConfig.ValidatorBlockSignContract {
 		return false
 	}
-
 	data := tx.Data()
-	method := common.Bytes2Hex(data[0:4])
-
-	if method != SignMethodHex || len(data) >= 68 {
+	// 4 (selector) + 32 (uint256 _blockNumber) + 32 (bytes32 _blockHash)
+	if len(data) < 68 {
 		return false
 	}
-
+	method := common.Bytes2Hex(data[0:4])
+	if method != SignMethodHex {
+		return false
+	}
 	return true
 }
 
