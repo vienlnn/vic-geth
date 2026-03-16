@@ -17,8 +17,9 @@
 package tradingstate
 
 import (
-	"github.com/ethereum/go-ethereum/common"
 	"math/big"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 type journalEntry interface {
@@ -74,6 +75,13 @@ type (
 		lendingBook common.Hash
 		tradeId     uint64
 	}
+	// createExchangeObjectChange is recorded when a brand-new exchange object is
+	// created for an address that did not previously exist. Undoing it removes
+	// the object from the in-memory cache and dirty set so that IntermediateRoot
+	// does not write it back to the trie.
+	createExchangeObjectChange struct {
+		hash common.Hash
+	}
 )
 
 func (ch insertOrder) undo(s *TradingStateDB) {
@@ -106,15 +114,29 @@ func (ch subAmountOrder) undo(s *TradingStateDB) {
 	stateOrderList.insertOrderItem(s.db, ch.orderId, common.BigToHash(newAmount))
 	stateOrderList.AddVolume(ch.amount)
 }
+func (ch createExchangeObjectChange) undo(s *TradingStateDB) {
+	delete(s.stateExhangeObjects, ch.hash)
+	delete(s.stateExhangeObjectsDirty, ch.hash)
+}
 func (ch nonceChange) undo(s *TradingStateDB) {
-	s.SetNonce(ch.hash, ch.prev)
+	// Use getStateExchangeObject (not GetOrNew) so we do not create a new object
+	// or append recursive journal entries during revert.
+	if obj := s.getStateExchangeObject(ch.hash); obj != nil {
+		obj.SetNonce(ch.prev)
+	}
 }
 func (ch lastPriceChange) undo(s *TradingStateDB) {
-	s.SetLastPrice(ch.hash, ch.prev)
+	if obj := s.getStateExchangeObject(ch.hash); obj != nil {
+		obj.setLastPrice(ch.prev)
+	}
 }
 func (ch mediumPriceChange) undo(s *TradingStateDB) {
-	s.SetMediumPrice(ch.hash, ch.prevPrice, ch.prevQuantity)
+	if obj := s.getStateExchangeObject(ch.hash); obj != nil {
+		obj.setMediumPrice(ch.prevPrice, ch.prevQuantity)
+	}
 }
 func (ch mediumPriceBeforeEpochChange) undo(s *TradingStateDB) {
-	s.SetMediumPriceBeforeEpoch(ch.hash, ch.prevPrice)
+	if obj := s.getStateExchangeObject(ch.hash); obj != nil {
+		obj.setMediumPriceBeforeEpoch(ch.prevPrice)
+	}
 }

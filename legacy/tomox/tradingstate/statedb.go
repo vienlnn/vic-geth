@@ -470,6 +470,10 @@ func (self *TradingStateDB) MarkStateExchangeObjectDirty(addr common.Hash) {
 // createStateOrderListObject creates a new state object. If there is an existing orderId with
 // the given address, it is overwritten and returned as the second return value.
 func (self *TradingStateDB) createExchangeObject(hash common.Hash) (newobj *tradingExchanges) {
+	// Record a journal entry so that RevertToSnapshot can remove this object
+	// from the in-memory cache and dirty set, preventing it from being written
+	// to the trie after a revert.
+	self.journal = append(self.journal, createExchangeObjectChange{hash: hash})
 	newobj = newStateExchanges(self, hash, tradingExchangeObject{LendingCount: Zero, MediumPrice: Zero, MediumPriceBeforeEpoch: Zero, TotalQuantity: Zero}, self.MarkStateExchangeObjectDirty)
 	newobj.setNonce(0) // sets the object to dirty
 	self.setStateExchangeObject(newobj)

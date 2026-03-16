@@ -8,23 +8,6 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 )
 
-// Legacy TomoX constants and helpers.
-//
-// Some of these share names with VictionConfig struct fields. They coexist
-// because legacy tradingstate utility functions are pure helpers without access
-// to a VictionConfig instance - they use these package-level defaults directly.
-var (
-	TomoNativeAddress      = "0x0000000000000000000000000000000000000001"
-	TradingStateAddr       = "0x0000000000000000000000000000000000000092"
-	BasePrice              = big.NewInt(1000000000000000000) // 1e18
-	RelayerLockedFund      = big.NewInt(25000)
-	TomoXBaseFee           = big.NewInt(10000) // 0.01% (in 1e8 precision)
-	RelayerFee             = big.NewInt(100)   // default relayer fee
-	RelayerCancelFee       = big.NewInt(100)   // default relayer cancel fee
-	TomoXBaseCancelFee     = big.NewInt(10000) // base cancel fee
-	RelayerRegistrationSMC = "0x0000000000000000000000000000000000000099"
-)
-
 // Uint64ToHash converts a uint64 to a Hash.
 func Uint64ToHash(n uint64) common.Hash {
 	return common.BigToHash(new(big.Int).SetUint64(n))
@@ -154,13 +137,6 @@ var blacklists = map[common.Address]bool{
 	common.HexToAddress("0xe187cf86c2274b1f16e8225a7da9a75aba4f1f5f"): true,
 }
 
-func (c *VictionConfig) IsBlacklisted(addr common.Address) bool {
-	if blocked, exists := blacklists[addr]; exists {
-		return blocked
-	}
-	return false
-}
-
 var victionBypassBalances = map[string]string{
 	"0x5248bfb72fd4f234e062d3e9bb76f08643004fcd": "29410",
 	"0x5ac26105b35ea8935be382863a70281ec7a985e9": "23551",
@@ -285,6 +261,13 @@ var victionBypassBlocks = map[uint64]string{
 	9147448: "0xfe685f43acc62f92ab01a8da80d76455d39d3cb3",
 	9147453: "0x3538a544021c07869c16b764424c5987409cba48",
 	9147459: "0xe187cf86c2274b1f16e8225a7da9a75aba4f1f5f",
+}
+
+func (c *VictionConfig) IsBlacklisted(addr common.Address) bool {
+	if blocked, exists := blacklists[addr]; exists {
+		return blocked
+	}
+	return false
 }
 
 func (c *VictionConfig) GetVictionBypassBalance(blockNum uint64, addr common.Address) *big.Int {

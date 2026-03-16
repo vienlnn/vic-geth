@@ -3,6 +3,7 @@
 package core
 
 import (
+	"fmt"
 	"math/big"
 	"runtime"
 	"sync"
@@ -88,18 +89,20 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 			parentAuthor, _ := p.engine.Author(parent.Header())
 			tradingState, err := p.tradingEngine.GetTradingState(parent, parentAuthor)
 			if err != nil {
-				log.Error("TomoX: failed to open TradingStateDB", "block", header.Number, "err", err)
-			} else {
-				p.victionState.tradingStateDB = tradingState
+				// Hard error: a nil tradingStateDB causes afterProcess to skip root
+				// verification entirely (nil guard), silently accepting an invalid block.
+				return fmt.Errorf("TomoX: failed to open TradingStateDB at block %d: %w", header.Number, err)
+			}
+			p.victionState.tradingStateDB = tradingState
 
-				// At epoch boundaries, update medium prices before any order matching
-				if header.Number.Uint64()%p.config.Posv.Epoch == 0 {
-					if err := p.tradingEngine.UpdateMediumPriceBeforeEpoch(
-						header.Number.Uint64()/p.config.Posv.Epoch,
-						tradingState, statedb,
-					); err != nil {
-						log.Error("TomoX: UpdateMediumPriceBeforeEpoch failed", "block", header.Number, "err", err)
-					}
+			// At epoch boundaries, update medium prices before any order matching.
+			// Intentional soft failure: epoch price is best-effort, not consensus-critical.
+			if header.Number.Uint64()%p.config.Posv.Epoch == 0 {
+				if err := p.tradingEngine.UpdateMediumPriceBeforeEpoch(
+					header.Number.Uint64()/p.config.Posv.Epoch,
+					tradingState, statedb,
+				); err != nil {
+					log.Error("TomoX: UpdateMediumPriceBeforeEpoch failed", "block", header.Number, "err", err)
 				}
 			}
 		}
@@ -117,20 +120,20 @@ func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB
 	}
 
 	// --- TomoX trading root verification ---
+	// Consensus-critical: a mismatch means order matching produced different state
+	// than what the block author committed in the 0x92 tx.
 	if p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		gotRoot := p.victionState.tradingStateDB.IntermediateRoot()
-		expectRoot := GetTradingStateRoot(block, p.config.Viction.TradingStateContract)
-		if gotRoot != expectRoot {
-			log.Error("TomoX: trading state root mismatch",
-				"block", block.NumberU64(),
-				"got", gotRoot.Hex(),
-				"expect", expectRoot.Hex(),
-			)
-			// Log the mismatch but don't fail the block for now.
-			// TODO: return error once full integration is verified on mainnet sync
-		} else {
-			log.Debug("TomoX: trading state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
+		blockAuthor, err := p.engine.Author(block.Header())
+		if err != nil {
+			return fmt.Errorf("TomoX: failed to resolve block author at block %d: %w", block.NumberU64(), err)
 		}
+		expectRoot := GetTradingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor)
+		if gotRoot != expectRoot {
+			return fmt.Errorf("TomoX: trading state root mismatch at block %d: got %s, expected %s",
+				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
+		}
+		log.Debug("TomoX: trading state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
 	}
 
 	return nil
@@ -351,33 +354,39 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	if len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		txMatchBatch, err := tradingstate.DecodeTxMatchesBatch(tx.Data())
 		if err != nil {
-			log.Error("TomoX: failed to decode TxMatchBatch", "tx", tx.Hash().Hex(), "err", err)
-		} else {
-			coinbase := header.Coinbase
-			tradingEngine := p.tradingEngine
-			tradingStateDB := p.victionState.tradingStateDB
+			// Site 1: batch decode failure is a hard block rejection.
+			// A node that cannot decode the TxMatchBatch cannot replay the block's
+			// trading state deterministically, so the block must be rejected.
+			return true, nil, 0, fmt.Errorf("TomoX: failed to decode TxMatchBatch tx=%s: %w", tx.Hash().Hex(), err), nil
+		}
 
-			for i, txDataMatch := range txMatchBatch.Data {
-				// Decode the order from the match data
-				order, err := txDataMatch.DecodeOrder()
-				if err != nil {
-					log.Error("TomoX: failed to decode order", "index", i, "err", err)
-					continue
-				}
+		coinbase := header.Coinbase
+		tradingEngine := p.tradingEngine
+		tradingStateDB := p.victionState.tradingStateDB
 
-				orderBook := tradingstate.GetTradingOrderBookHash(order.BaseToken, order.QuoteToken)
-
-				trades, rejects, err := tradingEngine.CommitOrder(header, coinbase, p.bc, statedb, tradingStateDB, orderBook, order)
-				if err != nil {
-					log.Error("TomoX: CommitOrder failed", "index", i, "order", order.Hash.Hex(), "err", err)
-					continue
-				}
-
-				if len(rejects) > 0 {
-					log.Debug("TomoX: orders rejected", "count", len(rejects))
-				}
-				_ = trades // trades are logged but not needed for state correctness
+		for i, txDataMatch := range txMatchBatch.Data {
+			// Decode the order from the match data
+			order, err := txDataMatch.DecodeOrder()
+			if err != nil {
+				// Site 2: victionchain behavior: soft-skip on per-order decode failure
+				// (see victionchain/core/block_validator.go:122-125)
+				log.Warn("TomoX: failed to decode order, skipping", "index", i, "err", err)
+				continue
 			}
+
+			orderBook := tradingstate.GetTradingOrderBookHash(order.BaseToken, order.QuoteToken)
+
+			trades, rejects, err := tradingEngine.CommitOrder(header, coinbase, p.bc, statedb, tradingStateDB, orderBook, order)
+			if err != nil {
+				// Site 3: victionchain behavior: CommitOrder/ApplyOrder failure is a hard error
+				// (see victionchain/core/block_validator.go:130-132)
+				return true, nil, 0, fmt.Errorf("TomoX: CommitOrder failed index=%d order=%s: %w", i, order.Hash.Hex(), err), nil
+			}
+
+			if len(rejects) > 0 {
+				log.Debug("TomoX: orders rejected", "count", len(rejects))
+			}
+			_ = trades // trades are logged but not needed for state correctness
 		}
 	}
 
@@ -396,14 +405,27 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 }
 
 // GetTradingStateRoot extracts the trading state root from the 0x92 transaction
-// in a block. Returns EmptyRoot if no such transaction exists.
+// authored by the block's coinbase. Returns EmptyRoot if no such transaction exists.
 // The 0x92 tx data format: [32 bytes trading root | 32 bytes lending root]
-func GetTradingStateRoot(block *types.Block, tradingStateAddr common.Address) common.Hash {
+//
+// Author validation: only the block author may commit the trading state root —
+// this is a consensus invariant.
+//
+// Signer: 0x92 system transactions are created by the victionchain miner using
+// HomesteadSigner (see legacy/tomox/tomox.go:GetTradingStateRoot:85).
+// We must use the same signer to correctly recover the transaction sender.
+func GetTradingStateRoot(block *types.Block, tradingStateAddr common.Address, author common.Address) common.Hash {
+	signer := types.HomesteadSigner{}
 	for _, tx := range block.Transactions() {
-		if tx.To() != nil && *tx.To() == tradingStateAddr {
-			if len(tx.Data()) >= 32 {
-				return common.BytesToHash(tx.Data()[:32])
-			}
+		if tx.To() == nil || *tx.To() != tradingStateAddr {
+			continue
+		}
+		from, err := types.Sender(signer, tx)
+		if err != nil || from != author {
+			continue
+		}
+		if len(tx.Data()) >= 32 {
+			return common.BytesToHash(tx.Data()[:32])
 		}
 	}
 	return tradingstate.EmptyRoot

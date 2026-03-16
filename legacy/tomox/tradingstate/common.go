@@ -3,15 +3,41 @@ package tradingstate
 import (
 	"encoding/json"
 	"errors"
-	"github.com/ethereum/go-ethereum/crypto"
 	"math/big"
 	"time"
+
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
 	OrderCacheLimit = 10000
+)
+
+const (
+	// TradingStateAddr is the system address for 0x92 trading-state-root transactions.
+	// IMPORTANT: This must always equal params.VictionConfig.TradingStateContract
+	// (the authoritative runtime value). Full elimination of this duplicate requires
+	// passing the address through the TomoX constructor — tracked as future work.
+	TradingStateAddr  = "0x0000000000000000000000000000000000000092"
+	TomoNativeAddress = "0x0000000000000000000000000000000000000001"
+)
+
+// Legacy TomoX constants and helpers.
+//
+// Some of these share names with VictionConfig struct fields. They coexist
+// because legacy tradingstate utility functions are pure helpers without access
+// to a VictionConfig instance - they use these package-level defaults directly.
+var (
+	BasePrice              = big.NewInt(1000000000000000000) // 1e18
+	RelayerLockedFund      = big.NewInt(25000)
+	TomoXBaseFee           = big.NewInt(10000) // 0.01% (in 1e8 precision)
+	RelayerFee             = big.NewInt(100)   // default relayer fee
+	RelayerCancelFee       = big.NewInt(100)   // default relayer cancel fee
+	TomoXBaseCancelFee     = big.NewInt(10000) // base cancel fee
+	RelayerRegistrationSMC = "0x0000000000000000000000000000000000000099"
+	ValidatorContract      = "0x0000000000000000000000000000000000000088"
 )
 
 var (

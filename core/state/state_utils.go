@@ -20,3 +20,11 @@ func GetStorageKeyForMapping(key common.Hash, slot uint64) common.Hash {
 	ret.SetBytes(retByte)
 	return common.BigToHash(ret)
 }
+
+// GetLocDynamicArrAtElement is used to get the location of element inside dynamic array
+func GetLocDynamicArrAtElement(slotHash common.Hash, index uint64, elementSize uint64) common.Hash {
+	slotKecBig := crypto.Keccak256Hash(slotHash.Bytes()).Big()
+	// arrBig = slotKecBig + index * elementSize
+	arrBig := slotKecBig.Add(slotKecBig, new(big.Int).SetUint64(index*elementSize))
+	return common.BigToHash(arrBig)
+}

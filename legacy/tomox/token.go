@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/contracts/tomox/contract"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/legacy/tomox/tradingstate"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -73,13 +74,13 @@ func (tomox *TomoX) GetTokenDecimal(chain consensus.ChainContext, statedb *state
 	if tokenDecimal, ok := tomox.tokenDecimalCache.Get(tokenAddr); ok {
 		return tokenDecimal.(*big.Int), nil
 	}
-	if tokenAddr.String() == params.TomoNativeAddress {
-		tomox.tokenDecimalCache.Add(tokenAddr, params.BasePrice)
-		return params.BasePrice, nil
+	if tokenAddr.String() == tradingstate.TomoNativeAddress {
+		tomox.tokenDecimalCache.Add(tokenAddr, tradingstate.BasePrice)
+		return tradingstate.BasePrice, nil
 	}
 	var decimals uint8
 	defer func() {
-		log.Debug("GetTokenDecimal from ", "relayerSMC", params.RelayerRegistrationSMC, "tokenAddr", tokenAddr.Hex(), "decimals", decimals)
+		log.Debug("GetTokenDecimal from ", "relayerSMC", tradingstate.RelayerRegistrationSMC, "tokenAddr", tokenAddr.Hex(), "decimals", decimals)
 	}()
 	contractABI, err := GetTokenAbi()
 	if err != nil {

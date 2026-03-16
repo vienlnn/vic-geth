@@ -6,9 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ethereum/go-ethereum/params"
-
 	"github.com/ethereum/go-ethereum/common"
+
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -181,8 +180,8 @@ func IsValidRelayer(statedb *state.StateDB, address common.Address) bool {
 
 	locBigDeposit := new(big.Int).SetUint64(uint64(0)).Add(locRelayerState, RelayerStructMappingSlot["_deposit"])
 	locHashDeposit := common.BigToHash(locBigDeposit)
-	balance := statedb.GetState(common.HexToAddress(params.RelayerRegistrationSMC), locHashDeposit).Big()
-	if balance.Cmp(new(big.Int).Mul(params.BasePrice, params.RelayerLockedFund)) <= 0 {
+	balance := statedb.GetState(common.HexToAddress(TomoNativeAddress), locHashDeposit).Big()
+	if balance.Cmp(new(big.Int).Mul(BasePrice, RelayerLockedFund)) <= 0 {
 		log.Debug("Relayer is not in relayer list", "relayer", address.String(), "balance", balance)
 		return false
 	}
@@ -218,20 +217,20 @@ func VerifyPair(statedb *state.StateDB, exchangeAddress, baseToken, quoteToken c
 
 func VerifyBalance(statedb *state.StateDB, tomoxStateDb *TradingStateDB, order *types.OrderTransaction, baseDecimal, quoteDecimal *big.Int) error {
 	var quotePrice *big.Int
-	if order.QuoteToken().String() != params.TomoNativeAddress {
-		quotePrice = tomoxStateDb.GetLastPrice(GetTradingOrderBookHash(order.QuoteToken(), common.HexToAddress(params.TomoNativeAddress)))
+	if order.QuoteToken().String() != TomoNativeAddress {
+		quotePrice = tomoxStateDb.GetLastPrice(GetTradingOrderBookHash(order.QuoteToken(), common.HexToAddress(TomoNativeAddress)))
 		log.Debug("TryGet quotePrice QuoteToken/TOMO", "quotePrice", quotePrice)
 		if quotePrice == nil || quotePrice.Sign() == 0 {
-			inversePrice := tomoxStateDb.GetLastPrice(GetTradingOrderBookHash(common.HexToAddress(params.TomoNativeAddress), order.QuoteToken()))
+			inversePrice := tomoxStateDb.GetLastPrice(GetTradingOrderBookHash(common.HexToAddress(TomoNativeAddress), order.QuoteToken()))
 			log.Debug("TryGet inversePrice TOMO/QuoteToken", "inversePrice", inversePrice)
 			if inversePrice != nil && inversePrice.Sign() > 0 {
-				quotePrice = new(big.Int).Mul(params.BasePrice, quoteDecimal)
+				quotePrice = new(big.Int).Mul(BasePrice, quoteDecimal)
 				quotePrice = new(big.Int).Div(quotePrice, inversePrice)
 				log.Debug("TryGet quotePrice after get inversePrice TOMO/QuoteToken", "quotePrice", quotePrice, "quoteTokenDecimal", quoteDecimal)
 			}
 		}
 	} else {
-		quotePrice = params.BasePrice
+		quotePrice = BasePrice
 	}
 	feeRate := GetExRelayerFee(order.ExchangeAddress(), statedb)
 	balanceResult, err := GetSettleBalance(quotePrice, order.Side(), feeRate, order.BaseToken(), order.QuoteToken(), order.Price(), feeRate, baseDecimal, quoteDecimal, order.Quantity())
