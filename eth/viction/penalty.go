@@ -1,19 +1,25 @@
 package viction
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/posv"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
-func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
+func PenalizeValidatorsDefault(bc *core.BlockChain, c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
 	header *types.Header,
-	chain consensus.ChainReader,
 ) ([]common.Address, error) {
+
+	if bc == nil {
+		return []common.Address{}, fmt.Errorf("blockchain not initialized (block %v)", header.Number)
+	}
 
 	blockNumber := header.Number.Uint64()
 	prevCheckpointBlockNumber := blockNumber - posvConfig.Epoch
@@ -24,34 +30,36 @@ func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvCon
 		return penalties, nil
 	}
 
-	prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
+	prevCheckpointHeader := bc.GetHeaderByNumber(prevCheckpointBlockNumber)
 	validators := posv.ExtractValidatorsFromCheckpointHeader(prevCheckpointHeader)
 	if len(validators) == 0 {
 		return penalties, nil
 	}
+	state, err := bc.State()
+	if err != nil {
+		return nil, err
+	}
 
 	for i := prevCheckpointBlockNumber; i < blockNumber; i++ {
 		if i%vicConfig.ValidatorSignInterval == 0 || !config.IsTIP2019(big.NewInt(int64(i))) {
-			header := chain.GetHeaderByNumber(i)
+			header := bc.GetHeaderByNumber(i)
 			if len(validators) == 0 {
 				break
 			}
-			txs := c.GetSignDataForBlock(config, vicConfig, header, chain)
-			signer := types.MakeSigner(config, big.NewInt(int64(i)))
-			// Check for BlockSign of specific signer
-			for _, tx := range txs {
-				from, err := types.Sender(signer, &tx)
-				if err != nil {
-					return nil, err
-				}
+			blockHeader := bc.GetBlock(header.Hash(), i)
+			signers := state.GetSigners(vicConfig.ValidatorBlockSignContract, blockHeader)
+			log.Info("PenalizeValidatorsDefault: signers", "block", header.Number, "signers", signers)
+
+			for _, signer := range signers {
 				for j, addr := range validators {
-					if from == addr {
+					if signer == addr {
 						validators = append(validators[:j], validators[j+1:]...)
 					}
 				}
 			}
 		}
 	}
+
 	return validators, nil
 }
 

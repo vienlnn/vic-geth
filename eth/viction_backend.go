@@ -129,7 +129,7 @@ func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, po
 	if config.IsTIPSigning(header.Number) {
 		return viction.PenalizeValidatorsTIPSigning(c, config, posvConfig, vicConfig, header, chain)
 	}
-	return viction.PenalizeValidatorsDefault(c, config, posvConfig, vicConfig, header, chain)
+	return viction.PenalizeValidatorsDefault(s.BlockChain(), c, config, posvConfig, vicConfig, header)
 }
 
 // Check a transaction is Viction BlockSign transaction.

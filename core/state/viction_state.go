@@ -4,6 +4,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 const SignMethodHex = "e341eaa4"
@@ -113,4 +114,16 @@ func (statedb *StateDB) VictionGetSecretOpening(contractAddress common.Address, 
 	openingStateData := statedb.GetState(contractAddress, openingElemSlot.Hash())
 	opening := common.BytesToHash(openingStateData.Bytes())
 	return opening
+}
+func (statedb *StateDB) GetSigners(contractAddress common.Address, block *types.Block) []common.Address {
+	signerslot := StorageLocationFromSlot(vicBlockSignerStorageMap["blockSigners"])
+	signerArrSlot := StorageLocationOfMappingElement(signerslot, block.Hash().Bytes())
+	arrLength := statedb.GetState(contractAddress, signerArrSlot.Hash()).Big().Uint64()
+	signers := make([]common.Address, 0, arrLength)
+	for i := uint64(0); i < arrLength; i++ {
+		signerSlot := StorageLocationOfDynamicArrayElement(signerArrSlot, i, 160)
+		signer := common.BytesToAddress(statedb.GetState(contractAddress, signerSlot.Hash()).Bytes())
+		signers = append(signers, signer)
+	}
+	return signers
 }

@@ -633,7 +633,7 @@ func (c *Posv) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types
 			// at the gap block (checkpoint - Gap).  We must not proceed until that
 			// state is committed to the DB.
 			if c.config != nil && number > 0 && number%c.config.Epoch == 0 {
-				requiredBlock := number - c.config.Gap
+				requiredBlock := number - 1
 				if cbc, ok := chain.(chainWithCurrentBlock); ok {
 					lastLog := time.Now()
 					for {
@@ -652,7 +652,7 @@ func (c *Posv) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types
 							break
 						}
 						if time.Since(lastLog) >= 5*time.Second {
-							log.Debug("VerifyHeaders: waiting for gap block state before verifying checkpoint",
+							log.Info("VerifyHeaders: waiting for gap block state before verifying checkpoint",
 								"checkpoint", number, "requiredBlock", requiredBlock,
 								"currentBlock", cb.NumberU64())
 							lastLog = time.Now()
