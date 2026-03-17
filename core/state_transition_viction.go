@@ -34,8 +34,8 @@ func (st *StateTransition) vrc25BuyGas() error {
 	// 4. Deduct from Contract's Storage Balance
 	// Note: The native ETH deduction happens in state_transition.go via st.state.SubBalance(st.payer)
 	newFeeCap := new(big.Int).Sub(feeCap, vrc25GasFee)
-	feeCapKey := state.GetStorageKeyForMapping(st.msg.To().Hash(), slotTokensState)
-	st.state.SetState(victionConfig.VRC25Contract, feeCapKey, common.BigToHash(newFeeCap))
+	feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), st.msg.To().Hash().Bytes())
+	st.state.SetState(victionConfig.VRC25Contract, feeCapKey.Hash(), common.BigToHash(newFeeCap))
 
 	// 5. Set Payer to System Contract
 	// This ensures buyGas() deducts native ETH from the system contract
@@ -59,8 +59,8 @@ func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 		feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
 		if feeCap != nil { // always non-nil for non-nil addr; guard defensively
 			newFeeCap := new(big.Int).Add(feeCap, remaining)
-			feeCapKey := state.GetStorageKeyForMapping(addr.Hash(), slotTokensState)
-			st.state.SetState(vrc25Contract, feeCapKey, common.BigToHash(newFeeCap))
+			feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), addr.Hash().Bytes())
+			st.state.SetState(vrc25Contract, feeCapKey.Hash(), common.BigToHash(newFeeCap))
 		}
 	}
 
@@ -105,7 +105,7 @@ func (st *StateTransition) applyTransactionFee() {
 	}
 
 	// After TIPTRC21Fee fork: route fee to the registered owner of the validator.
-	slot := state.GetValidatorOwnerSlot(st.evm.Context.Coinbase)
+	slot := state.StorageLocationOfValidatorOwner(st.evm.Context.Coinbase)
 	ownerHash := st.state.GetState(victionCfg.ValidatorContract, slot)
 	owner := common.BytesToAddress(ownerHash.Bytes())
 	if owner != (common.Address{}) {

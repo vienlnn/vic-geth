@@ -60,8 +60,8 @@ func GetBaseTokenAtIndex(relayer common.Address, statedb *state.StateDB, index u
 	locBig := GetLocMappingAtKey(relayer.Hash(), slot)
 	locBig = new(big.Int).Add(locBig, RelayerStructMappingSlot["_fromTokens"])
 	locHash := common.BigToHash(locBig)
-	loc := state.GetLocDynamicArrAtElement(locHash, index, 1)
-	return common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), loc).Bytes())
+	loc := state.StorageLocationOfDynamicArrayElement(state.StorageLocationFromHash(locHash), index, 1)
+	return common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), loc.Hash()).Bytes())
 }
 
 func GetQuoteTokenLength(relayer common.Address, statedb *state.StateDB) uint64 {
@@ -77,8 +77,8 @@ func GetQuoteTokenAtIndex(relayer common.Address, statedb *state.StateDB, index 
 	locBig := GetLocMappingAtKey(relayer.Hash(), slot)
 	locBig = new(big.Int).Add(locBig, RelayerStructMappingSlot["_toTokens"])
 	locHash := common.BigToHash(locBig)
-	loc := state.GetLocDynamicArrAtElement(locHash, index, 1)
-	return common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), loc).Bytes())
+	loc := state.StorageLocationOfDynamicArrayElement(state.StorageLocationFromHash(locHash), index, 1)
+	return common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), loc.Hash()).Bytes())
 }
 
 func GetRelayerCount(statedb *state.StateDB) uint64 {
@@ -114,12 +114,12 @@ func GetAllTradingPairs(statedb *state.StateDB) (map[common.Hash]bool, error) {
 		fromTokens := []common.Address{}
 		fromTokenSlotHash := common.BytesToHash(fromTokenSlot.Bytes())
 		for i := uint64(0); i < fromTokenLength; i++ {
-			fromToken := common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), state.GetLocDynamicArrAtElement(fromTokenSlotHash, i, uint64(1))).Bytes())
+			fromToken := common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), state.StorageLocationOfDynamicArrayElement(state.StorageLocationFromHash(fromTokenSlotHash), i, uint64(1)).Hash()).Bytes())
 			fromTokens = append(fromTokens, fromToken)
 		}
 		toTokenSlotHash := common.BytesToHash(toTokenSlot.Bytes())
 		for i := uint64(0); i < toTokenLength; i++ {
-			toToken := common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), state.GetLocDynamicArrAtElement(toTokenSlotHash, i, uint64(1))).Bytes())
+			toToken := common.BytesToAddress(statedb.GetState(common.HexToAddress(RelayerRegistrationSMC), state.StorageLocationOfDynamicArrayElement(state.StorageLocationFromHash(toTokenSlotHash), i, uint64(1)).Hash()).Bytes())
 
 			log.Debug("GetAllTradingPairs all pair info", "from", fromTokens[i].Hex(), "toToken", toToken.Hex())
 			allPairs[GetTradingOrderBookHash(fromTokens[i], toToken)] = true

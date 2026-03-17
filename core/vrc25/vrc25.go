@@ -37,9 +37,10 @@ func PayFeeWithVRC25(statedb vm.StateDB, from common.Address, token common.Addre
 		return ErrInvalidParams
 	}
 	// 2. Retrieve the balance of the from address for the VRC25 token
-	slotBalances := SlotVRC25Token["balances"]
-	balanceKey := state.GetStorageKeyForMapping(from.Hash(), slotBalances)
-	balanceHash := statedb.GetState(token, balanceKey)
+	slotBalances := SlotVRC25Token["balances"]                 // uint64 slot index
+	balanceSlot := state.StorageLocationFromSlot(slotBalances) // StorageLocation (32-byte slot)
+	balanceKey := state.StorageLocationOfMappingElement(balanceSlot, from.Hash().Bytes())
+	balanceHash := statedb.GetState(token, balanceKey.Hash())
 
 	if balanceHash != (common.Hash{}) {
 		// 3. Check if balance is positive
@@ -48,16 +49,16 @@ func PayFeeWithVRC25(statedb vm.StateDB, from common.Address, token common.Addre
 			return nil
 		}
 		// 4. Retrieve the issuer address of the token
-		issuerKey := state.GetStorageKeyForSlot(SlotVRC25Token["issuer"])
-		issuerHash := statedb.GetState(token, issuerKey)
+		issuerKey := state.StorageLocationFromSlot(SlotVRC25Token["issuer"])
+		issuerHash := statedb.GetState(token, issuerKey.Hash())
 		if issuerHash == (common.Hash{}) {
 			return nil
 		}
 		issuerAddr := common.BytesToAddress(issuerHash.Bytes())
 
 		// 5. Retrieve the minimum fee required by the token
-		minFeeKey := state.GetStorageKeyForSlot(SlotVRC25Token["minFee"])
-		minFeeHash := statedb.GetState(token, minFeeKey)
+		minFeeKey := state.StorageLocationFromSlot(SlotVRC25Token["minFee"])
+		minFeeHash := statedb.GetState(token, minFeeKey.Hash())
 		minFee := minFeeHash.Big()
 
 		// 6. Determine the actual fee to charge (lesser of balance or minFee)
@@ -68,14 +69,14 @@ func PayFeeWithVRC25(statedb vm.StateDB, from common.Address, token common.Addre
 
 		// 7. Deduct the fee from the user's balance and update state
 		newBalance := new(big.Int).Sub(balance, feeUsed)
-		statedb.SetState(token, balanceKey, common.BigToHash(newBalance))
+		statedb.SetState(token, balanceKey.Hash(), common.BigToHash(newBalance))
 
 		// 8. Add the fee to the issuer's balance and update state
-		issuerBalanceKey := state.GetStorageKeyForMapping(issuerAddr.Hash(), slotBalances)
-		issuerBalanceHash := statedb.GetState(token, issuerBalanceKey)
+		issuerBalanceKey := state.StorageLocationOfMappingElement(balanceSlot, issuerAddr.Hash().Bytes())
+		issuerBalanceHash := statedb.GetState(token, issuerBalanceKey.Hash())
 		issuerBalance := issuerBalanceHash.Big()
 		newIssuerBalance := new(big.Int).Add(issuerBalance, feeUsed)
-		statedb.SetState(token, issuerBalanceKey, common.BigToHash(newIssuerBalance))
+		statedb.SetState(token, issuerBalanceKey.Hash(), common.BigToHash(newIssuerBalance))
 	}
 	return nil
 }
@@ -88,8 +89,8 @@ func UpdateFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, newBala
 	}
 	slotTokensState := SlotVRC25Contract["tokensState"]
 	for token, value := range newBalance {
-		balanceKey := state.GetStorageKeyForMapping(token.Hash(), slotTokensState)
-		statedb.SetState(vrc25Contract, balanceKey, common.BigToHash(value))
+		balanceKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), token.Hash().Bytes())
+		statedb.SetState(vrc25Contract, balanceKey.Hash(), common.BigToHash(value))
 	}
 	statedb.SubBalance(vrc25Contract, totalFeeUsed)
 }
@@ -99,8 +100,8 @@ func GetFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, addr *comm
 	if addr == nil {
 		return nil
 	}
-	feeCapKey := state.GetStorageKeyForMapping(addr.Hash(), SlotVRC25Contract["tokensState"])
-	feeCapHash := statedb.GetState(vrc25Contract, feeCapKey)
+	feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(SlotVRC25Contract["tokensState"]), addr.Hash().Bytes())
+	feeCapHash := statedb.GetState(vrc25Contract, feeCapKey.Hash())
 	return feeCapHash.Big()
 }
 
@@ -112,11 +113,11 @@ func ValidateVRC25Transaction(statedb vm.StateDB, vrc25Contract common.Address, 
 	}
 
 	slotBalances := SlotVRC25Token["balances"]
-	balanceKey := state.GetStorageKeyForMapping(from.Hash(), slotBalances)
-	balanceHash := statedb.GetState(to, balanceKey)
+	balanceKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotBalances), from.Hash().Bytes())
+	balanceHash := statedb.GetState(to, balanceKey.Hash())
 	minFeeSlot := SlotVRC25Token["minFee"]
-	minFeeKey := state.GetStorageKeyForSlot(minFeeSlot)
-	minFeeHash := statedb.GetState(to, minFeeKey)
+	minFeeKey := state.StorageLocationFromSlot(minFeeSlot)
+	minFeeHash := statedb.GetState(to, minFeeKey.Hash())
 
 	if balanceHash == (common.Hash{}) {
 		if minFeeHash != (common.Hash{}) {
