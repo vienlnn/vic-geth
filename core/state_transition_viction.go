@@ -49,19 +49,23 @@ func (st *StateTransition) isVRC25Transaction() bool {
 	return st.payer != st.msg.From()
 }
 
+// vrc25RefundGas is called for VRC25-sponsored transactions and all Atlas-block transactions.
+// For sponsored transactions it also restores the unused portion to the fee capacity storage slot.
+// For non-sponsored Atlas transactions it only returns native ETH to the sender.
 func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
-	addr := st.msg.To()
-	// Get current balance
-	feeCap := vrc25.GetFeeCapacity(st.state, st.evm.ChainConfig().Viction.VRC25Contract, addr)
-	if feeCap == nil {
-		// Should not happen if isSponsoringTransaction is true, but handle safely
-		return
+	if st.isVRC25Transaction() {
+		addr := st.msg.To()
+		vrc25Contract := st.evm.ChainConfig().Viction.VRC25Contract
+		feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
+		if feeCap != nil { // always non-nil for non-nil addr; guard defensively
+			newFeeCap := new(big.Int).Add(feeCap, remaining)
+			feeCapKey := state.GetStorageKeyForMapping(addr.Hash(), slotTokensState)
+			st.state.SetState(vrc25Contract, feeCapKey, common.BigToHash(newFeeCap))
+		}
 	}
 
-	// Refund to Contract's Storage Balance
-	newFeeCap := new(big.Int).Add(feeCap, remaining)
-	feeCapKey := state.GetStorageKeyForMapping(addr.Hash(), slotTokensState)
-	st.state.SetState(st.evm.ChainConfig().Viction.VRC25Contract, feeCapKey, common.BigToHash(newFeeCap))
+	// Return native ETH to the payer (VRC25Contract for sponsored txs, sender otherwise).
+	st.state.AddBalance(st.payer, remaining)
 }
 
 // applyTransactionFee distributes the transaction fee to the correct recipient.

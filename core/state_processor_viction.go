@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -45,10 +44,6 @@ type TradingEngine interface {
 
 type victionProcessorState struct {
 	currentBlockNumber *big.Int
-	parrentState       *state.StateDB
-	balanceFee         map[common.Address]*big.Int
-	balanceUpdated     map[common.Address]*big.Int
-	totalFeeUsed       *big.Int
 
 	// TomoX legacy trading state (parallel Merkle trie for order books).
 	// Initialized per block in beforeProcess from the parent block's trading root.
@@ -59,13 +54,9 @@ type victionProcessorState struct {
 func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateDB) error {
 	header := block.Header()
 
-	// Initialize victionState
+	// Initialize victionState for this block.
 	p.victionState = &victionProcessorState{
 		currentBlockNumber: new(big.Int).Set(header.Number),
-		balanceFee:         make(map[common.Address]*big.Int),
-		balanceUpdated:     make(map[common.Address]*big.Int),
-		totalFeeUsed:       big.NewInt(0),
-		parrentState:       statedb.Copy(),
 	}
 
 	if p.config.TIPSigningBlock != nil && p.config.TIPSigningBlock.Cmp(header.Number) == 0 {
@@ -114,10 +105,6 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 }
 
 func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB) error {
-	if !p.config.IsAtlas(block.Number()) {
-		vrc25.UpdateFeeCapacity(statedb, p.config.Viction.VRC25Contract, p.victionState.balanceUpdated, p.victionState.totalFeeUsed)
-	}
-
 	// --- TomoX trading root verification ---
 	// Consensus-critical: a mismatch means order matching produced different state
 	// than what the block author committed in the 0x92 tx.
@@ -271,35 +258,16 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 	}
 
 	blockNum := p.victionState.currentBlockNumber
-	isAtlas := p.config.IsAtlas(blockNum)
 
-	// VRC25 / TRC21 Fee Logic
-	if !isAtlas && tx.To() != nil {
-		if p.config.IsTIPTRC21Fee(blockNum) {
-			fee := new(big.Int).SetUint64(usedGas)
-			if p.config.Viction.TRC21GasPrice != nil {
-				price := (*big.Int)(p.config.Viction.TRC21GasPrice)
-				fee = fee.Mul(fee, price)
-			}
+	// For failed VRC25-sponsored transactions the EVM reverts so no token transfer
+	// executes. Charge a minimum token fee to prevent free failed-tx abuse.
+	if !p.config.IsAtlas(blockNum) && tx.To() != nil &&
+		p.config.IsTIPTRC21Fee(blockNum) &&
+		receipt.Status == types.ReceiptStatusFailed {
 
-			balanceFee := vrc25.GetFeeCapacity(statedb, p.config.Viction.VRC25Contract, tx.To())
-
-			if receipt.Status == types.ReceiptStatusFailed {
-				if balanceFee != nil && balanceFee.Cmp(fee) > 0 {
-					vrc25.PayFeeWithVRC25(statedb, msg.From(), *tx.To())
-				}
-			}
-
-			if balanceFee != nil && balanceFee.Cmp(fee) >= 0 {
-				currentVal, ok := p.victionState.balanceFee[*tx.To()]
-				if !ok {
-					currentVal = balanceFee
-				}
-				newVal := new(big.Int).Sub(currentVal, fee)
-				p.victionState.balanceFee[*tx.To()] = newVal
-				p.victionState.balanceUpdated[*tx.To()] = newVal
-				p.victionState.totalFeeUsed = new(big.Int).Add(p.victionState.totalFeeUsed, fee)
-			}
+		feeCap := vrc25.GetFeeCapacity(statedb, p.config.Viction.VRC25Contract, tx.To())
+		if feeCap != nil && feeCap.Sign() > 0 {
+			vrc25.PayFeeWithVRC25(statedb, msg.From(), *tx.To())
 		}
 	}
 	return nil
