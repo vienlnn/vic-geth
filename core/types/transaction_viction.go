@@ -39,22 +39,21 @@ func IsTradingTransaction(to *common.Address) bool {
 // registration transaction to the BlockSigner contract.
 // blockSignAddr is the ValidatorBlockSignContract address from chain config.
 func (tx *Transaction) IsSigningTransaction(blockSignAddr common.Address) bool {
-	if tx.To() == nil {
+	if tx == nil || tx.To() == nil {
 		return false
 	}
 	if *tx.To() != blockSignAddr {
 		return false
 	}
 	data := tx.Data()
-	if len(data) < 4 {
-		return false
-	}
-	if !bytes.Equal(data[0:4], signMethodSelector) {
-		return false
-	}
 	// sign(uint256 blockNumber, bytes32 blockHash) = 4 + 32 + 32 = 68 bytes
 	if len(data) != 68 {
 		return false
 	}
+
+	if !bytes.Equal(data[0:4], signMethodSelector) {
+		return false
+	}
+
 	return true
 }
