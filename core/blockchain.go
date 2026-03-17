@@ -1968,6 +1968,16 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)
+		if bc.chainConfig.Posv != nil {
+			// prepare set of masternodes for the next epoch
+			if (block.NumberU64() % bc.chainConfig.Posv.Epoch) == (bc.chainConfig.Posv.Epoch - bc.chainConfig.Posv.Gap) {
+				err := bc.UpdateM1()
+				if err != nil {
+					log.Error("Error when update masternodes set. Stopping node", "err", err)
+					return it.index, err
+				}
+			}
+		}
 	}
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && errors.Is(err, consensus.ErrFutureBlock) {
