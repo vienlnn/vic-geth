@@ -9,6 +9,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/viction"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/legacy/tomox"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -106,4 +108,9 @@ func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, po
 // [TO-DO] PosvGetValidators returns list of eligible validators from the state.
 func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]common.Address, error) {
 	return nil, nil
+}
+
+func (s *Ethereum) PosvSetTomoxTradingEngine(tradingDb ethdb.Database) {
+	tomoxEngine := tomox.NewWithDB(tradingDb)
+	s.blockchain.SetTradingEngine(tomoxEngine)
 }

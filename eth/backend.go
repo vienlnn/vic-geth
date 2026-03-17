@@ -43,7 +43,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/legacy/tomox"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/node"
@@ -196,16 +195,15 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
 
-	// Initialize legacy TomoX trading engine for historical block sync.
-	// This is only needed for pre-Atlas blocks that contain TomoX transactions.
+	// Initialize legacy TomoX trading engine for historical block replay.
+	// Required on Viction (Posv) networks to sync pre-Atlas blocks containing
+	// TomoX order matching transactions (0x91). Not needed on non-Posv chains.
 	if chainConfig.Posv != nil {
 		tradingDb, err := stack.OpenDatabase("tomox", 256, 256, "eth/db/tomox/")
 		if err != nil {
 			log.Error("Failed to open TomoX trading database", "err", err)
 		} else {
-			tomoxEngine := tomox.NewWithDB(tradingDb)
-			eth.blockchain.SetTradingEngine(tomoxEngine)
-			log.Info("Legacy TomoX trading engine initialized for sync")
+			eth.PosvSetTomoxTradingEngine(tradingDb)
 		}
 	}
 
