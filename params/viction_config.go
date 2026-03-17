@@ -8,10 +8,21 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 )
 
+// Uint64ToHash converts a uint64 to a Hash.
+func Uint64ToHash(n uint64) common.Hash {
+	return common.BigToHash(new(big.Int).SetUint64(n))
+}
+
+// EmptyHash checks if a hash is the zero hash.
+func EmptyHash(h common.Hash) bool {
+	return h == common.Hash{}
+}
+
 type VictionConfig struct {
 	AtlasVRC25MinCap *math.Decimal256 `json:"atlasVRC25MinCap,omitempty"`
 
 	LendingContract            common.Address   `json:"lendingContract,omitempty"`
+	LendingFinalizedContract   common.Address   `json:"lendingFinalizedContract,omitempty"`
 	LendingInterestAmount      *math.Decimal256 `json:"lendingInterestAmount,omitempty"`
 	LendingLiquidateTradeBlock uint64           `json:"lendingLiquidateTradeBlock,omitempty"`
 
@@ -44,13 +55,14 @@ type VictionConfig struct {
 	SaigonFundRepeat     uint64           `json:"saigonFundRepeat,omitempty"`
 	SaigonRewardPerEpoch *math.Decimal256 `json:"saigonRewardPerEpoch,omitempty"`
 
-	TomoXBaseCancelFee *math.Decimal256 `json:"tomoxBaseCancelFee,omitempty"`
-	TomoXBaseFee       *math.Decimal256 `json:"tomoxBaseFee,omitempty"`
-	TomoXBasePrice     *math.Decimal256 `json:"tomoxBasePrice,omitempty"`
-	TomoXBaseRecall    *math.Decimal256 `json:"tomoxBaseRecall,omitempty"`
-	TomoXContract      common.Address   `json:"tomoxContract,omitempty"`
-	TomoXTopupDenom    uint64           `json:"tomoxTopupDenom,omitempty"`
-	TomoXTopupNumer    uint64           `json:"tomoxTopupNumer,omitempty"`
+	TomoXBaseCancelFee   *math.Decimal256 `json:"tomoxBaseCancelFee,omitempty"`
+	TomoXBaseFee         *math.Decimal256 `json:"tomoxBaseFee,omitempty"`
+	TomoXBasePrice       *math.Decimal256 `json:"tomoxBasePrice,omitempty"`
+	TomoXBaseRecall      *math.Decimal256 `json:"tomoxBaseRecall,omitempty"`
+	TomoXContract        common.Address   `json:"tomoxContract,omitempty"`
+	TomoXTopupDenom      uint64           `json:"tomoxTopupDenom,omitempty"`
+	TomoXTopupNumer      uint64           `json:"tomoxTopupNumer,omitempty"`
+	TradingStateContract common.Address   `json:"tradingStateContract,omitempty"`
 
 	ValidatorBlockSignContract     common.Address `json:"validatorBlockSignContract,omitempty"`
 	ValidatorContract              common.Address `json:"validatorContract,omitempty"`
@@ -123,13 +135,6 @@ var blacklists = map[common.Address]bool{
 	common.HexToAddress("0xfe685f43acc62f92ab01a8da80d76455d39d3cb3"): true,
 	common.HexToAddress("0x3538a544021c07869c16b764424c5987409cba48"): true,
 	common.HexToAddress("0xe187cf86c2274b1f16e8225a7da9a75aba4f1f5f"): true,
-}
-
-func (c *VictionConfig) IsBlacklisted(addr common.Address) bool {
-	if blocked, exists := blacklists[addr]; exists {
-		return blocked
-	}
-	return false
 }
 
 var victionBypassBalances = map[string]string{
@@ -256,6 +261,13 @@ var victionBypassBlocks = map[uint64]string{
 	9147448: "0xfe685f43acc62f92ab01a8da80d76455d39d3cb3",
 	9147453: "0x3538a544021c07869c16b764424c5987409cba48",
 	9147459: "0xe187cf86c2274b1f16e8225a7da9a75aba4f1f5f",
+}
+
+func (c *VictionConfig) IsBlacklisted(addr common.Address) bool {
+	if blocked, exists := blacklists[addr]; exists {
+		return blocked
+	}
+	return false
 }
 
 func (c *VictionConfig) GetVictionBypassBalance(blockNum uint64, addr common.Address) *big.Int {

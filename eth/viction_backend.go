@@ -11,6 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/viction"
+	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/legacy/tomox"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
@@ -195,4 +197,9 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 	}
 	return validators, nil
 
+}
+
+func (s *Ethereum) PosvSetTomoxTradingEngine(tradingDb ethdb.Database) {
+	tomoxEngine := tomox.NewWithDB(tradingDb)
+	s.blockchain.SetTradingEngine(tomoxEngine)
 }

@@ -199,6 +199,19 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 		eth.blockchain.SetHead(compat.RewindTo)
 		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
+
+	// Initialize legacy TomoX trading engine for historical block replay.
+	// Required on Viction (Posv) networks to sync pre-Atlas blocks containing
+	// TomoX order matching transactions (0x91). Not needed on non-Posv chains.
+	if chainConfig.Posv != nil {
+		tradingDb, err := stack.OpenDatabase("tomox", 256, 256, "eth/db/tomox/")
+		if err != nil {
+			log.Error("Failed to open TomoX trading database", "err", err)
+		} else {
+			eth.PosvSetTomoxTradingEngine(tradingDb)
+		}
+	}
+
 	eth.bloomIndexer.Start(eth.blockchain)
 
 	if config.TxPool.Journal != "" {
