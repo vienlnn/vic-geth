@@ -1974,6 +1974,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				err := bc.UpdateM1()
 				if err != nil {
 					log.Error("Error when update masternodes set. Stopping node", "err", err)
+					return it.index, err
 				}
 			}
 		}
