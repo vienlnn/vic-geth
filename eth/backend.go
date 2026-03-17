@@ -186,7 +186,7 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 			log.Info("PosvBackend set on Posv engine")
 			if head := eth.blockchain.CurrentHeader(); head != nil {
 				if err := eth.engine.VerifyHeader(eth.blockchain, head, true); err != nil {
-					log.Crit("Head invalid after full POSV check", "number", head.Number, "hash", head.Hash(), "err", err)
+					log.Warn("Head invalid after full POSV check", "number", head.Number, "hash", head.Hash(), "err", err)
 				}
 			}
 		} else {

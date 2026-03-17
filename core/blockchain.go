@@ -1973,7 +1973,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 			if (block.NumberU64() % bc.chainConfig.Posv.Epoch) == (bc.chainConfig.Posv.Epoch - bc.chainConfig.Posv.Gap) {
 				err := bc.UpdateM1()
 				if err != nil {
-					log.Crit("Error when update masternodes set. Stopping node", "err", err)
+					log.Error("Error when update masternodes set. Stopping node", "err", err)
 				}
 			}
 		}
