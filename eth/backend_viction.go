@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/legacy/tomox"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
 )
@@ -202,4 +203,37 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 func (s *Ethereum) PosvSetTomoxTradingEngine(tradingDb ethdb.Database) {
 	tomoxEngine := tomox.NewWithDB(tradingDb)
 	s.blockchain.SetTradingEngine(tomoxEngine)
+}
+
+// setupPosvBackend wires the POSV engine backend and optional TomoX trading engine.
+func (eth *Ethereum) setupPosvBackend(chainConfig *params.ChainConfig, stack *node.Node) error {
+	if chainConfig.Posv == nil {
+		return nil
+	}
+
+	posvEngine, ok := eth.engine.(*posv.Posv)
+	if !ok {
+		return fmt.Errorf("posv config present but engine is %T, expected *posv.Posv", eth.engine)
+	}
+
+	// Wire POSV backend
+	posvEngine.SetBackend(eth)
+	log.Info("PosvBackend set on Posv engine")
+	if head := eth.blockchain.CurrentHeader(); head != nil {
+		if err := eth.engine.VerifyHeader(eth.blockchain, head, true); err != nil {
+			log.Warn("Head invalid after full POSV check", "number", head.Number, "hash", head.Hash(), "err", err)
+		}
+	}
+
+	// Initialize legacy TomoX trading engine for historical block replay.
+	// Required on Viction (Posv) networks to sync pre-Atlas blocks containing
+	// TomoX order matching transactions (0x91). Not needed on non-Posv chains.
+	tradingDb, err := stack.OpenDatabase("tomox", 256, 256, "eth/db/tomox/")
+	if err != nil {
+		log.Error("Failed to open TomoX trading database", "err", err)
+	} else {
+		eth.PosvSetTomoxTradingEngine(tradingDb)
+	}
+
+	return nil
 }
