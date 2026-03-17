@@ -177,22 +177,7 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Set PosvBackend now that eth.blockchain is fully initialised.
-	// Must be done AFTER NewBlockChain returns so that eth.blockchain is non-nil
-	// when NewBlockChain's internal VerifyHeader call triggers verifyValidators.
-	if chainConfig.Posv != nil {
-		if posvEngine, ok := eth.engine.(*posv.Posv); ok {
-			posvEngine.SetBackend(eth)
-			log.Info("PosvBackend set on Posv engine")
-			if head := eth.blockchain.CurrentHeader(); head != nil {
-				if err := eth.engine.VerifyHeader(eth.blockchain, head, true); err != nil {
-					log.Warn("Head invalid after full POSV check", "number", head.Number, "hash", head.Hash(), "err", err)
-				}
-			}
-		} else {
-			return nil, fmt.Errorf("posv config present but engine is %T, expected *posv.Posv", eth.engine)
-		}
-	}
+
 	// Rewind the chain in case of an incompatible config upgrade.
 	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
 		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
@@ -200,16 +185,11 @@ func New(stack *node.Node, config *Config) (*Ethereum, error) {
 		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
 
-	// Initialize legacy TomoX trading engine for historical block replay.
-	// Required on Viction (Posv) networks to sync pre-Atlas blocks containing
-	// TomoX order matching transactions (0x91). Not needed on non-Posv chains.
-	if chainConfig.Posv != nil {
-		tradingDb, err := stack.OpenDatabase("tomox", 256, 256, "eth/db/tomox/")
-		if err != nil {
-			log.Error("Failed to open TomoX trading database", "err", err)
-		} else {
-			eth.PosvSetTomoxTradingEngine(tradingDb)
-		}
+	// Set PosvBackend now that eth.blockchain is fully initialised.
+	// Must be done AFTER NewBlockChain returns so that eth.blockchain is non-nil
+	// when NewBlockChain's internal VerifyHeader call triggers verifyValidators.
+	if err := eth.setupPosvBackend(chainConfig, stack); err != nil {
+		return nil, err
 	}
 
 	eth.bloomIndexer.Start(eth.blockchain)
