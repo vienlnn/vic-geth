@@ -684,7 +684,6 @@ func (bc *BlockChain) Processor() Processor {
 	return bc.processor
 }
 
-
 // State returns a new mutable state based on the current HEAD block.
 func (bc *BlockChain) State() (*state.StateDB, error) {
 	return bc.StateAt(bc.CurrentBlock().Root())
