@@ -67,7 +67,7 @@ func CalcRewardsForValidators(
 		}
 		blockSignAddr := vicConfig.ValidatorBlockSignContract
 		for _, tx := range block.Transactions() {
-			if !IsSigningTransaction(tx, blockSignAddr) {
+			if !tx.IsSigningTransaction(blockSignAddr) {
 				continue
 			}
 			txData := tx.Data()
