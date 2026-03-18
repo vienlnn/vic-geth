@@ -40,7 +40,7 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 	data := []types.Transaction{}
 	transactions := block.Transactions()
 	for _, tx := range transactions {
-		if IsVicBlockSingingTx(*tx, vicConfig) {
+		if tx.IsSigningTransaction(vicConfig.ValidatorBlockSignContract) {
 			data = append(data, *tx)
 		}
 	}
@@ -133,25 +133,6 @@ func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, po
 		return viction.PenalizeValidatorsTIPSigning(c, config, posvConfig, vicConfig, header, chain)
 	}
 	return viction.PenalizeValidatorsDefault(c, config, posvConfig, vicConfig, header, chain)
-}
-
-// Check a transaction is Viction BlockSign transaction.
-func IsVicBlockSingingTx(tx types.Transaction, vicConfig *params.VictionConfig) bool {
-	toAddr := tx.To()
-	if toAddr == nil || *toAddr != vicConfig.ValidatorBlockSignContract {
-		return false
-	}
-	data := tx.Data()
-	// 4 (selector) + 32 (uint256 _blockNumber) + 32 (bytes32 _blockHash)
-	// data may contain additional data, so we need to check if it's at least 68 bytes
-	if len(data) < 68 {
-		return false
-	}
-	method := common.Bytes2Hex(data[0:4])
-	if method != SignMethodHex {
-		return false
-	}
-	return true
 }
 
 // Get eligble validators from the state.
