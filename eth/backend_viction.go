@@ -37,12 +37,35 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 ) []types.Transaction {
 	blockNumber := header.Number
 	block := chain.GetBlock(header.Hash(), blockNumber.Uint64())
+	if block == nil {
+		return []types.Transaction{}
+	}
 	data := []types.Transaction{}
-	transactions := block.Transactions()
-	for _, tx := range transactions {
-		if tx.IsSigningTransaction(vicConfig.ValidatorBlockSignContract) {
-			data = append(data, *tx)
+
+	// Before TIPSigning, block-sign txs are EVM-executed and may fail. Only
+	// successful signing txs count toward rewards and penalties.
+	var receipts types.Receipts
+	if !config.IsTIPSigning(blockNumber) {
+		receipts = s.blockchain.GetReceiptsByHash(header.Hash())
+	}
+
+	for i, tx := range block.Transactions() {
+		if !tx.IsSigningTransaction(vicConfig.ValidatorBlockSignContract) {
+			continue
 		}
+		if receipts != nil && i < len(receipts) {
+			r := receipts[i]
+			var status uint64
+			if len(r.PostState) > 0 {
+				status = types.ReceiptStatusSuccessful
+			} else {
+				status = r.Status
+			}
+			if status == types.ReceiptStatusFailed {
+				continue
+			}
+		}
+		data = append(data, *tx)
 	}
 	return data
 }
@@ -85,7 +108,20 @@ func (s *Ethereum) PosvGetEpochReward(c *posv.Posv, config *params.ChainConfig, 
 	}
 	epochRewards.ValidatorRewards = validatorRewards
 
-	stakeholderRewards, err := viction.CalcRewardsForStakeholders(c, config, posvConfig, vicConfig, header, validatorRewards, statedb, logger)
+	// Use pre-transaction state for voter caps
+	parentHeader := chain.GetHeader(header.ParentHash, blockNumber-1)
+	var rewardState *state.StateDB
+	if parentHeader != nil {
+		rewardState, err = s.BlockChain().StateAt(parentHeader.Root)
+		if err != nil {
+			logger.Warn("PosvGetEpochReward: failed to get parent state, falling back to current state", "block", blockNumber, "err", err)
+			rewardState = statedb
+		}
+	} else {
+		rewardState = statedb
+	}
+
+	stakeholderRewards, err := viction.CalcRewardsForStakeholders(c, config, posvConfig, vicConfig, header, validatorRewards, rewardState, logger)
 	if err != nil {
 		return nil, err
 	}
