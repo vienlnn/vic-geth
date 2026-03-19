@@ -73,6 +73,14 @@ var YoloV2Bootnodes = []string{
 	"enode://9e1096aa59862a6f164994cb5cb16f5124d6c992cdbf4535ff7dea43ea1512afe5448dca9df1b7ab0726129603f1a3336b631e4d7a1a44c94daddd03241587f9@3.9.20.133:30303",
 }
 
+var VictionBootnodes = []string{
+	"enode://5575d1bb8897028a357f5969ff56eea999d36fd78971b4ccd34b4de512e43b69a16007c5064da4577114084de0550a5666601f91a4d45d9f00aa1ad3ecca2a47@162.19.43.250:11033",
+	"enode://8e86ec8bfee4c15ac44ee6eb9cd8d01ea5a37bab77c75f048cd7bb81795a005d1ed7446be774fe7a92fb51c624cc4ac24fdbf833f14cdcd0edf0dc663bfde1df@162.19.43.250:11133",
+	"enode://2564d07926c1de10d46b465a2575586aaf15431764179c23aa503e4e10aaa73b16cd6ff45eca298cc7de806f682df5cfe227d4cca62b11f5dc2f718a91baf461@162.19.43.250:15033",
+	"enode://63f48d8c83a0469b4dae8b889af59ef3c68d75f0686f52287a67da177f104b9f56b1cf9f69e3bdf6a5629dbae3243315bd513d05a30f30f3969f16f0fa2d8e19@162.19.43.250:15133",
+	"enode://8e86ec8bfee4c15ac44ee6eb9cd8d01ea5a37bab77c75f048cd7bb81795a005d1ed7446be774fe7a92fb51c624cc4ac24fdbf833f14cdcd0edf0dc663bfde1df@162.19.43.250:11133",
+}
+
 const dnsPrefix = "enrtree://AKA3AM6LPBYEUDMVNU3BSVQJ5AD45Y7YPOHJLEF6W26QOE4VTUDPE@"
 
 // KnownDNSNetwork returns the address of a public DNS-based node list for the given
@@ -89,6 +97,8 @@ func KnownDNSNetwork(genesis common.Hash, protocol string) string {
 		net = "rinkeby"
 	case GoerliGenesisHash:
 		net = "goerli"
+	case VictionGenesisHash:
+		net = "viction"
 	default:
 		return ""
 	}
