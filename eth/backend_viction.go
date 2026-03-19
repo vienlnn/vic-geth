@@ -108,7 +108,20 @@ func (s *Ethereum) PosvGetEpochReward(c *posv.Posv, config *params.ChainConfig, 
 	}
 	epochRewards.ValidatorRewards = validatorRewards
 
-	stakeholderRewards, err := viction.CalcRewardsForStakeholders(c, config, posvConfig, vicConfig, header, validatorRewards, statedb, logger)
+	// Use pre-transaction state for voter caps
+	parentHeader := chain.GetHeader(header.ParentHash, blockNumber-1)
+	var rewardState *state.StateDB
+	if parentHeader != nil {
+		rewardState, err = s.BlockChain().StateAt(parentHeader.Root)
+		if err != nil {
+			logger.Warn("PosvGetEpochReward: failed to get parent state, falling back to current state", "block", blockNumber, "err", err)
+			rewardState = statedb
+		}
+	} else {
+		rewardState = statedb
+	}
+
+	stakeholderRewards, err := viction.CalcRewardsForStakeholders(c, config, posvConfig, vicConfig, header, validatorRewards, rewardState, logger)
 	if err != nil {
 		return nil, err
 	}
