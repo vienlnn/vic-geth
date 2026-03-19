@@ -61,21 +61,15 @@ func CalcRewardsForValidators(
 		}
 		blockHashes[i] = h.Hash()
 
-		block := chain.GetBlock(h.Hash(), i)
-		if block == nil {
-			continue
-		}
-		blockSignAddr := vicConfig.ValidatorBlockSignContract
-		for _, tx := range block.Transactions() {
-			if !tx.IsSigningTransaction(blockSignAddr) {
-				continue
-			}
+		// Use GetSignDataForBlock so that pre-TIPSigning blocks are filtered by receipt status
+		txs := c.GetSignDataForBlock(config, vicConfig, h, chain)
+		signer := types.MakeSigner(config, h.Number)
+		for _, tx := range txs {
 			txData := tx.Data()
 			if len(txData) < common.HashLength {
 				continue
 			}
 			signedBlockHash := common.BytesToHash(txData[len(txData)-common.HashLength:])
-			signer := types.MakeSigner(config, h.Number)
 			msg, err := tx.AsMessage(signer)
 			if err != nil {
 				logger.Debug("CalcRewardsForValidators: failed to get sender", "txHash", tx.Hash().Hex(), "err", err)
