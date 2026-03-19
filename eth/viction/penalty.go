@@ -36,7 +36,10 @@ func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvCon
 			if len(validators) == 0 {
 				break
 			}
-			txs := c.GetSignDataForBlock(config, vicConfig, header, chain)
+			txs, err := c.GetSignDataForBlock(config, vicConfig, header, chain)
+			if err != nil {
+				return []common.Address{}, err
+			}
 			signer := types.MakeSigner(config, big.NewInt(int64(i)))
 			// Check for BlockSign of specific signer
 			for _, tx := range txs {
@@ -128,7 +131,10 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 			if blockNumber%vicConfig.ValidatorSignInterval == 0 {
 				mapBlockHash[blockHash] = true
 			}
-			txs := c.GetSignDataForBlock(config, vicConfig, header, chain)
+			txs, err := c.GetSignDataForBlock(config, vicConfig, header, chain)
+			if err != nil {
+				return []common.Address{}, err
+			}
 			signer := types.MakeSigner(config, big.NewInt(int64(blockNumber)))
 			// Check for BlockSign of specific signer
 			for _, tx := range txs {

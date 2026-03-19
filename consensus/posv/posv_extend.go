@@ -59,7 +59,7 @@ type PosvBackend interface {
 	PosvGetAttestors(vicConfig *params.VictionConfig, header *types.Header, validators []common.Address) ([]int64, error)
 
 	// Get block signers from the state.
-	PosvGetBlockSignData(config *params.ChainConfig, vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) []types.Transaction
+	PosvGetBlockSignData(config *params.ChainConfig, vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]types.Transaction, error)
 
 	// Get creator-attestor pairs from the state.
 	PosvGetCreatorAttestorPairs(c *Posv, config *params.ChainConfig, header, checkpointHeader *types.Header) (map[common.Address]common.Address, uint64, error)
@@ -177,12 +177,20 @@ func DecodeAttestorsFromHeader(attestorsBuff []byte) []int64 {
 
 // Get all BlockSign transactions for a given block. If it's not cached yet, get it from the state.
 func (c *Posv) GetSignDataForBlock(config *params.ChainConfig, vicConfig *params.VictionConfig, header *types.Header,
-	chain consensus.ChainReader) []types.Transaction {
+	chain consensus.ChainReader) ([]types.Transaction, error) {
+	if header == nil {
+		return nil, fmt.Errorf("GetSignDataForBlock: header is nil")
+	}
 	blockHash := header.Hash()
 	if signers, ok := c.BlockSigners.Get(blockHash); ok {
-		return signers.([]types.Transaction)
+		if signers, ok := signers.([]types.Transaction); ok && signers != nil {
+			return signers, nil
+		}
 	}
-	signers := c.backend.PosvGetBlockSignData(config, vicConfig, header, chain)
+	signers, err := c.backend.PosvGetBlockSignData(config, vicConfig, header, chain)
+	if err != nil {
+		return nil, err
+	}
 	c.BlockSigners.Add(blockHash, signers)
-	return signers
+	return signers, nil
 }

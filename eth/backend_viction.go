@@ -34,11 +34,15 @@ func (s *Ethereum) PosvGetAttestors(vicConfig *params.VictionConfig, header *typ
 // Get block signers from the state.
 func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *params.VictionConfig, header *types.Header,
 	chain consensus.ChainReader,
-) []types.Transaction {
+) ([]types.Transaction, error) {
+	if header == nil {
+		return nil, fmt.Errorf("PosvGetBlockSignData: header is nil")
+	}
+	blockHash := header.Hash()
 	blockNumber := header.Number
-	block := chain.GetBlock(header.Hash(), blockNumber.Uint64())
+	block := chain.GetBlock(blockHash, blockNumber.Uint64())
 	if block == nil {
-		return []types.Transaction{}
+		return nil, fmt.Errorf("PosvGetBlockSignData: block body not found (number=%d hash=%s)", blockNumber, blockHash)
 	}
 	data := []types.Transaction{}
 
@@ -46,10 +50,17 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 	// successful signing txs count toward rewards and penalties.
 	var receipts types.Receipts
 	if !config.IsTIPSigning(blockNumber) {
-		receipts = s.blockchain.GetReceiptsByHash(header.Hash())
+		receipts = s.blockchain.GetReceiptsByHash(blockHash)
+	}
+	txs := block.Transactions()
+	if receipts != nil && len(receipts) != len(txs) {
+		return nil, fmt.Errorf(
+			"PosvGetBlockSignData: receipts/tx count mismatch (number=%d hash=%s txs=%d receipts=%d)",
+			blockNumber.Uint64(), blockHash, len(txs), len(receipts),
+		)
 	}
 
-	for i, tx := range block.Transactions() {
+	for i, tx := range txs {
 		if !tx.IsSigningTransaction(vicConfig.ValidatorBlockSignContract) {
 			continue
 		}
@@ -67,7 +78,7 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 		}
 		data = append(data, *tx)
 	}
-	return data
+	return data, nil
 }
 
 // Get creator-attestor pairs from the state.
@@ -175,7 +186,7 @@ func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, po
 func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader,
 ) ([]common.Address, error) {
 	if header == nil {
-		return []common.Address{}, nil
+		return []common.Address{}, fmt.Errorf("header is nil")
 	}
 	// Guard against being called before eth.blockchain is assigned (e.g. during
 	// NewBlockChain's internal VerifyHeader when SetBackend was called too early).

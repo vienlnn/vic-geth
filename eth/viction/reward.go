@@ -62,7 +62,10 @@ func CalcRewardsForValidators(
 		blockHashes[i] = h.Hash()
 
 		// Use GetSignDataForBlock so that pre-TIPSigning blocks are filtered by receipt status
-		txs := c.GetSignDataForBlock(config, vicConfig, h, chain)
+		txs, err := c.GetSignDataForBlock(config, vicConfig, h, chain)
+		if err != nil {
+			return nil, err
+		}
 		signer := types.MakeSigner(config, h.Number)
 		for _, tx := range txs {
 			txData := tx.Data()
