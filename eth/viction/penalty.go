@@ -1,20 +1,30 @@
 package viction
 
 import (
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/posv"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 )
 
-func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
+func PenalizeValidatorsDefault(bc *core.BlockChain, c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
 	header *types.Header,
 	chain consensus.ChainReader,
 ) ([]common.Address, error) {
-
+	if bc == nil {
+		return []common.Address{}, fmt.Errorf("blockchain not initialized (block %v)", header.Number)
+	}
+	// Viction reads signers from the contract using the state trie at the checkpoint block.
+	// This avoids relying on where the BlockSign tx ended up being included.
+	statedb, err := bc.State()
+	if err != nil {
+		return nil, fmt.Errorf("penalize/default: failed to get statedb at checkpoint root: %w", err)
+	}
 	blockNumber := header.Number.Uint64()
 	prevCheckpointBlockNumber := blockNumber - posvConfig.Epoch
 	penalties := []common.Address{}
@@ -31,26 +41,25 @@ func PenalizeValidatorsDefault(c *posv.Posv, config *params.ChainConfig, posvCon
 	}
 
 	for i := prevCheckpointBlockNumber; i < blockNumber; i++ {
-		if i%vicConfig.ValidatorSignInterval == 0 || !config.IsTIP2019(big.NewInt(int64(i))) {
-			header := chain.GetHeaderByNumber(i)
-			if len(validators) == 0 {
-				break
-			}
-			txs, err := c.GetSignDataForBlock(config, vicConfig, header, chain)
-			if err != nil {
-				return []common.Address{}, err
-			}
-			signer := types.MakeSigner(config, big.NewInt(int64(i)))
-			// Check for BlockSign of specific signer
-			for _, tx := range txs {
-				from, err := types.Sender(signer, &tx)
-				if err != nil {
-					return nil, err
-				}
-				for j, addr := range validators {
-					if from == addr {
-						validators = append(validators[:j], validators[j+1:]...)
-					}
+		// Only check blocks that can be signed (sign interval) and/or pre-TIP blocks.
+		if i%vicConfig.ValidatorSignInterval != 0 && config != nil && config.IsTIP2019(big.NewInt(int64(i))) {
+			continue
+		}
+
+		h := chain.GetHeaderByNumber(i)
+		if h == nil {
+			continue
+		}
+		blk := bc.GetBlock(h.Hash(), i)
+		if blk == nil {
+			continue
+		}
+
+		signers := statedb.GetSigners(vicConfig.ValidatorBlockSignContract, blk)
+		for _, signer := range signers {
+			for j, addr := range validators {
+				if signer == addr {
+					validators = append(validators[:j], validators[j+1:]...)
 				}
 			}
 		}
