@@ -65,7 +65,9 @@ func (bc *BlockChain) UpdateM1() error {
 				return ms[i].Stake.Cmp(ms[j].Stake) >= 0
 			})
 		} else {
-			sort.Slice(candidates, func(i, j int) bool {
+			// Must sort `ms`, not `candidates`: indices i,j are in [0, len(slice));
+			// len(candidates) can exceed len(ms) when zero-address entries are skipped.
+			sort.Slice(ms, func(i, j int) bool {
 				return bigxt.IsGreaterThanOrEqualInt(ms[i].Stake, ms[j].Stake)
 			})
 		}
