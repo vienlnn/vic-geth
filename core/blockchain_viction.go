@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus/posv"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
+	"github.com/ethereum/go-ethereum/sortlgc"
 )
 
 // SetTradingEngine injects the legacy TomoX trading engine into the block processor.
@@ -65,8 +65,10 @@ func (bc *BlockChain) UpdateM1() error {
 				return ms[i].Stake.Cmp(ms[j].Stake) >= 0
 			})
 		} else {
-			sort.Slice(candidates, func(i, j int) bool {
-				return bigxt.IsGreaterThanOrEqualInt(ms[i].Stake, ms[j].Stake)
+			// Must sort `ms`, not `candidates`: indices i,j are in [0, len(slice));
+			// len(candidates) can exceed len(ms) when zero-address entries are skipped.
+			sortlgc.Slice(ms, func(i, j int) bool {
+				return ms[i].Stake.Cmp(ms[j].Stake) >= 0
 			})
 		}
 		log.Info("Ordered list of masternode candidates")
