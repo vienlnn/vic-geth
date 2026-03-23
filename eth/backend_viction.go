@@ -3,7 +3,6 @@ package eth
 import (
 	"fmt"
 	"math/big"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -16,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/tforce-io/tf-golib/stdx/mathxt/bigxt"
+	"github.com/ethereum/go-ethereum/sortlgc"
 )
 
 const SignMethodHex = "e341eaa4"
@@ -213,8 +212,8 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 		candidates = append(candidates, &posv.ValidatorInfo{Address: addr, Capacity: cap})
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return bigxt.IsGreaterThanOrEqualInt(candidates[i].Capacity, candidates[j].Capacity)
+	sortlgc.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Capacity.Cmp(candidates[j].Capacity) >= 0
 	})
 	validatorMaxCountInt := int(vicConfig.ValidatorMaxCount)
 	if len(candidates) > validatorMaxCountInt {
