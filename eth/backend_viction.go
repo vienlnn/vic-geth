@@ -3,6 +3,7 @@ package eth
 import (
 	"fmt"
 	"math/big"
+	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -212,9 +213,16 @@ func (s *Ethereum) PosvGetValidators(vicConfig *params.VictionConfig, header *ty
 		candidates = append(candidates, &posv.ValidatorInfo{Address: addr, Capacity: cap})
 	}
 
-	sortlgc.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Capacity.Cmp(candidates[j].Capacity) >= 0
-	})
+	if s.blockchain.Config().IsAtlas(header.Number) {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			return candidates[i].Capacity.Cmp(candidates[j].Capacity) >= 0
+		})
+	} else {
+		sortlgc.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Capacity.Cmp(candidates[j].Capacity) >= 0
+		})
+	}
+
 	validatorMaxCountInt := int(vicConfig.ValidatorMaxCount)
 	if len(candidates) > validatorMaxCountInt {
 		candidates = candidates[:validatorMaxCountInt]
