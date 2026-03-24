@@ -233,10 +233,11 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		return nil, gas, ErrInsufficientBalance
 	}
 	snapshot := evm.StateDB.Snapshot()
-	p, isPrecompile := evm.precompile(addr)
+	p, isPrecompile := evm.precompileByEngine(addr)
+	precompiles := evm.precompileMapForCallByEngine()
 
 	if !evm.StateDB.Exist(addr) {
-		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
+		if precompiles[addr] == nil && !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.vmConfig.Debug && evm.depth == 0 {
 				evm.vmConfig.Tracer.CaptureStart(caller.Address(), addr, false, input, gas, value)
@@ -270,7 +271,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			// The depth-check is already done, and precompiles handled above
 			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
 			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-			ret, err = run(evm, contract, input, false)
+			ret, err = runByEngine(evm, contract, input, false)
 			gas = contract.Gas
 		}
 	}
@@ -389,12 +390,17 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	var snapshot = evm.StateDB.Snapshot()
 
 	// We do an AddBalance of zero here, just in order to trigger a touch.
-	// This doesn't matter on Mainnet, where all empties are gone at the time of Byzantium,
-	// but is the correct thing to do and matters on other networks, in tests, and potential
-	// future scenarios
-	evm.StateDB.AddBalance(addr, big0)
+	// For POSV, keep this behavior only after TomoX cancellation-fee fork.
+	// For non-POSV chains, keep the original always-touch behavior.
 
-	if p, isPrecompile := evm.precompile(addr); isPrecompile {
+	if evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber) {
+		evm.StateDB.AddBalance(addr, big0)
+
+	} else {
+		evm.StateDB.AddBalance(addr, big0)
+	}
+
+	if p, isPrecompile := evm.precompileByEngine(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
 	} else {
 		// At this point, we use a copy of address. If we don't, the go compiler will
@@ -405,10 +411,11 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 		// The contract is a scoped environment for this execution context only.
 		contract := NewContract(caller, AccountRef(addrCopy), new(big.Int), gas)
 		contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
-		// When an error was returned by the EVM or when setting the creation code
-		// above we revert to the snapshot and consume any gas remaining. Additionally
-		// when we're in Homestead this also counts for code storage gas errors.
-		ret, err = run(evm, contract, input, true)
+		if evm.ChainConfig().IsTIPTomoX(evm.Context.BlockNumber) {
+			ret, err = runByEngine(evm, contract, input, evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber))
+		} else {
+			ret, err = runByEngine(evm, contract, input, true)
+		}
 		gas = contract.Gas
 	}
 	if err != nil {
