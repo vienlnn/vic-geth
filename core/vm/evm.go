@@ -57,12 +57,14 @@ func (evm *EVM) ActivePrecompiles() []common.Address {
 	}
 }
 
+// precompileViction selects precompiles with Viction fork gating.
+// Istanbul precompiles are enabled only after TIPTomoXCancelFee.
 func (evm *EVM) precompile(addr common.Address) (PrecompiledContract, bool) {
 	var precompiles map[common.Address]PrecompiledContract
 	switch {
 	case evm.chainRules.IsYoloV2:
 		precompiles = PrecompiledContractsYoloV2
-	case evm.chainRules.IsIstanbul:
+	case evm.chainRules.IsIstanbul && evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber):
 		precompiles = PrecompiledContractsIstanbul
 	case evm.chainRules.IsByzantium:
 		precompiles = PrecompiledContractsByzantium
@@ -75,18 +77,23 @@ func (evm *EVM) precompile(addr common.Address) (PrecompiledContract, bool) {
 
 // run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter.
 func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, error) {
-	for _, interpreter := range evm.interpreters {
-		if interpreter.CanRun(contract.Code) {
-			if evm.interpreter != interpreter {
-				// Ensure that the interpreter pointer is set back
-				// to its current value upon return.
-				defer func(i Interpreter) {
-					evm.interpreter = i
-				}(evm.interpreter)
-				evm.interpreter = interpreter
+	if evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber) {
+		for _, interpreter := range evm.interpreters {
+			if interpreter.CanRun(contract.Code) {
+				if evm.interpreter != interpreter {
+					// Ensure that the interpreter pointer is set back
+					// to its current value upon return.
+					defer func(i Interpreter) {
+						evm.interpreter = i
+					}(evm.interpreter)
+					evm.interpreter = interpreter
+				}
+				return interpreter.Run(contract, input, readOnly)
 			}
-			return interpreter.Run(contract, input, readOnly)
 		}
+
+	} else {
+		return evm.interpreter.Run(contract, input, readOnly)
 	}
 	return nil, errors.New("no compatible interpreter")
 }
@@ -233,11 +240,10 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		return nil, gas, ErrInsufficientBalance
 	}
 	snapshot := evm.StateDB.Snapshot()
-	p, isPrecompile := evm.precompileByEngine(addr)
-	precompiles := evm.precompileMapForCallByEngine()
+	p, isPrecompile := evm.precompile(addr)
 
 	if !evm.StateDB.Exist(addr) {
-		if precompiles[addr] == nil && !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
+		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.vmConfig.Debug && evm.depth == 0 {
 				evm.vmConfig.Tracer.CaptureStart(caller.Address(), addr, false, input, gas, value)
@@ -271,7 +277,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			// The depth-check is already done, and precompiles handled above
 			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
 			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-			ret, err = runByEngine(evm, contract, input, false)
+			ret, err = run(evm, contract, input, false)
 			gas = contract.Gas
 		}
 	}
@@ -395,12 +401,9 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 
 	if evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber) {
 		evm.StateDB.AddBalance(addr, big0)
-
-	} else {
-		evm.StateDB.AddBalance(addr, big0)
 	}
 
-	if p, isPrecompile := evm.precompileByEngine(addr); isPrecompile {
+	if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
 	} else {
 		// At this point, we use a copy of address. If we don't, the go compiler will
@@ -412,9 +415,9 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 		contract := NewContract(caller, AccountRef(addrCopy), new(big.Int), gas)
 		contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
 		if evm.ChainConfig().IsTIPTomoX(evm.Context.BlockNumber) {
-			ret, err = runByEngine(evm, contract, input, evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber))
+			ret, err = run(evm, contract, input, evm.ChainConfig().IsTIPTomoXCancelFee(evm.Context.BlockNumber))
 		} else {
-			ret, err = runByEngine(evm, contract, input, true)
+			ret, err = run(evm, contract, input, true)
 		}
 		gas = contract.Gas
 	}
