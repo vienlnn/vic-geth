@@ -69,10 +69,13 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 		}
 		if receipts != nil && i < len(receipts) {
 			r := receipts[i]
-			if r == nil {
-				continue
+			var status uint64
+			if len(r.PostState) > 0 {
+				status = types.ReceiptStatusSuccessful
+			} else {
+				status = r.Status
 			}
-			if r.Status == types.ReceiptStatusFailed {
+			if status == types.ReceiptStatusFailed {
 				continue
 			}
 		}
