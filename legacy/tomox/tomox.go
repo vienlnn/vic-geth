@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/legacy/tomox/tradingstate"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/params"
 
 	"sync"
 
@@ -47,6 +48,10 @@ type TomoX struct {
 	Triegc     *prque.Prque          // Priority queue mapping block numbers to tries to gc
 	StateCache tradingstate.Database // State database to reuse between imports (contains state cache)    *tomox_state.TradingStateDB
 
+	// config is needed to derive the correct transaction signer (EIP155 vs Homestead)
+	// when extracting the trading state root from the 0x92 system transaction.
+	config *params.ChainConfig
+
 	orderNonce map[common.Address]*big.Int
 
 	settings          sync.Map // holds configuration settings that can be dynamically changed
@@ -54,10 +59,11 @@ type TomoX struct {
 	orderCache        *lru.Cache
 }
 
-func NewWithDB(db ethdb.Database) *TomoX {
+func NewWithDB(db ethdb.Database, config *params.ChainConfig) *TomoX {
 	tokenDecimalCache, _ := lru.New(defaultCacheLimit)
 	orderCache, _ := lru.New(tradingstate.OrderCacheLimit)
 	tomoX := &TomoX{
+		config:            config,
 		orderNonce:        make(map[common.Address]*big.Int),
 		Triegc:            prque.New(nil),
 		tokenDecimalCache: tokenDecimalCache,
@@ -80,16 +86,17 @@ func (tomox *TomoX) GetTradingState(block *types.Block, author common.Address) (
 }
 
 func (tomox *TomoX) GetTradingStateRoot(block *types.Block, author common.Address) (common.Hash, error) {
+	signer := types.MakeSigner(tomox.config, block.Number())
 	for _, tx := range block.Transactions() {
-		signer := types.HomesteadSigner{}
-		from, err := types.Sender(signer, tx)
-		if err != nil {
+		if tx.To() == nil || tx.To().Hex() != tradingstate.TradingStateAddr {
 			continue
 		}
-		if tx.To() != nil && tx.To().Hex() == tradingstate.TradingStateAddr && from.String() == author.String() {
-			if len(tx.Data()) >= 32 {
-				return common.BytesToHash(tx.Data()[:32]), nil
-			}
+		from, err := types.Sender(signer, tx)
+		if err != nil || from != author {
+			continue
+		}
+		if len(tx.Data()) >= 32 {
+			return common.BytesToHash(tx.Data()[:32]), nil
 		}
 	}
 	return tradingstate.EmptyRoot, nil

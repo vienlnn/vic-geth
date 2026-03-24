@@ -115,7 +115,7 @@ func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB
 		if err != nil {
 			return fmt.Errorf("TomoX: failed to resolve block author at block %d: %w", block.NumberU64(), err)
 		}
-		expectRoot := GetTradingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor)
+		expectRoot := GetTradingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor, p.config)
 		if gotRoot != expectRoot {
 			return fmt.Errorf("TomoX: trading state root mismatch at block %d: got %s, expected %s",
 				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
@@ -377,12 +377,8 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 //
 // Author validation: only the block author may commit the trading state root —
 // this is a consensus invariant.
-//
-// Signer: 0x92 system transactions are created by the victionchain miner using
-// HomesteadSigner (see legacy/tomox/tomox.go:GetTradingStateRoot:85).
-// We must use the same signer to correctly recover the transaction sender.
-func GetTradingStateRoot(block *types.Block, tradingStateAddr common.Address, author common.Address) common.Hash {
-	signer := types.HomesteadSigner{}
+func GetTradingStateRoot(block *types.Block, tradingStateAddr common.Address, author common.Address, config *params.ChainConfig) common.Hash {
+	signer := types.MakeSigner(config, block.Number())
 	for _, tx := range block.Transactions() {
 		if tx.To() == nil || *tx.To() != tradingStateAddr {
 			continue
