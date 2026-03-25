@@ -72,7 +72,7 @@ type PosvBackend interface {
 	PosvDistributeEpochRewards(header *types.Header, state *state.StateDB, epochReward *EpochReward) error
 
 	// Penalize validators for creating bad block or not creating block at all.
-	PosvGetPenalties(c *Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]common.Address, error)
+	PosvGetPenalties(c *Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader, validators []common.Address) ([]common.Address, error)
 
 	// Get eligble validators from the state.
 	PosvGetValidators(vicConfig *params.VictionConfig, header *types.Header, chain consensus.ChainReader) ([]common.Address, error)
