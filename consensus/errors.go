@@ -35,7 +35,5 @@ var (
 	// plus one.
 	ErrInvalidNumber = errors.New("invalid block number")
 
-	ErrFailValidatorSignature = errors.New("invalid validator signature")
-
 	ErrNoValidatorSignature = errors.New("no validator in header")
 )
