@@ -71,6 +71,7 @@ func PenalizeValidatorsDefault(bc *core.BlockChain, c *posv.Posv, config *params
 func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
 	header *types.Header,
 	chain consensus.ChainReader,
+	validators []common.Address,
 ) ([]common.Address, error) {
 	blockNumber := header.Number.Uint64()
 	prevCheckpointBlockNumber := blockNumber - posvConfig.Epoch
@@ -99,8 +100,8 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 
 	// Penalize validators didn't create block or lower than required
 	prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
-	validators := posv.ExtractValidatorsFromCheckpointHeader(prevCheckpointHeader)
-	for _, validator := range validators {
+	preValidators := posv.ExtractValidatorsFromCheckpointHeader(prevCheckpointHeader)
+	for _, validator := range preValidators {
 		if _, exist := blockMiningCounts[validator]; !exist {
 			penalties = append(penalties, validator)
 		}
