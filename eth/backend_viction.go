@@ -46,13 +46,13 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 	}
 	data := []types.Transaction{}
 
-	// Before TIPSigning, block-sign txs are EVM-executed and may fail.
+	// Block-sign txs are EVM-executed and may fail.
 	// Only successful signing txs count toward rewards and penalties.
 	//
 	// On post-Byzantium receipt format, `Receipt.Status` is the correct source
 	// of success/failure. Using `len(PostState)` is unreliable and can misclassify.
 	var receipts types.Receipts
-	if config != nil && !config.IsTIPSigning(blockNumber) {
+	if config != nil {
 		receipts = s.blockchain.GetReceiptsByHash(blockHash)
 	}
 	txs := block.Transactions()
