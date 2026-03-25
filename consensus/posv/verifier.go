@@ -54,8 +54,8 @@ func (c *Posv) verifyHeader(chain consensus.ChainHeaderReader, header *types.Hea
 	nowUnix := now.Unix()
 
 	if seal {
-		if header.Number.Uint64() > c.config.Epoch && len(header.Attestor) != ExtraSeal {
-			return consensus.ErrFailValidatorSignature
+		if header.Number.Uint64() > c.config.Epoch && len(header.Attestor) == 0 {
+			return consensus.ErrNoValidatorSignature
 		}
 		// Don't waste time checking blocks from the future
 		if header.Time > uint64(nowUnix) {
