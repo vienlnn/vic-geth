@@ -132,10 +132,10 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 	}
 
 	// If penalized validators has BlockSign recently, remove them from penalties
-	if len(comebacks) > 0 {
-		mapBlockHash := map[common.Hash]bool{}
-		for i := vicConfig.PenaltyComebackBlockCount - 1; i >= 0; i-- {
-			blockNumber := header.Number.Uint64() - i - 1
+	mapBlockHash := map[common.Hash]bool{}
+	for i := int(vicConfig.PenaltyComebackBlockCount) - 1; i >= 0; i-- {
+		if len(comebacks) > 0 {
+			blockNumber := header.Number.Uint64() - uint64(i) - 1
 			header := chain.GetHeaderByNumber(blockNumber)
 			blockHash := epochBlockHashes[i]
 			if blockNumber%vicConfig.ValidatorSignInterval == 0 {
@@ -162,6 +162,8 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 					}
 				}
 			}
+		} else {
+			break
 		}
 	}
 
