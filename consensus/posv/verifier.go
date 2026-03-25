@@ -350,8 +350,8 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 		}
 	}
 
-	// Enforce double validation (POSV-encoded headers only)
-	if number > c.config.Epoch && seal && header.Posv {
+	// Enforce double validation
+	if number > c.config.Epoch {
 		attestor, err := c.Attestor(header)
 		if err != nil {
 			return err
