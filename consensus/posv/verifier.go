@@ -200,6 +200,7 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 
 	retryCount := 0
 	for retryCount < 2 {
+		var validPenalty bool
 		// compare penalties computed from state with header.Penalties
 		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain, validators)
 		if err != nil {
@@ -207,40 +208,40 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 		}
 
 		penaltiesBuff := EncodePenaltiesForHeader(penalties)
-		if !bytes.Equal(penaltiesBuff, header.Penalties) {
-			log.Error("Penalty mismatch", "number", number,
-				"computedPenalties", penalties, "headerPenalties", DecodePenaltiesFromHeader(header.Penalties))
-			return errInvalidCheckpointPenalties
-		}
-		// remove penalized validators in current epoch
-		if len(penalties) > 0 {
-			log.Info("Removing current epoch penalties", "number", number, "penalties", penalties)
-			validators = common.SetSubstract(validators, penalties)
-			header.Penalties = EncodePenaltiesForHeader(penalties)
-		}
-		// remove penalized validators in recent epochs
-		for i := uint64(1); i <= chain.Config().Viction.PenaltyEpochCount; i++ {
-			if number > (i * c.config.Epoch) {
-				prevCheckpointBlockNumber := number - (i * c.config.Epoch)
-				prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
-				if prevCheckpointHeader == nil {
-					return fmt.Errorf("couldn't retrieve previous checkpoint header for penalty verification")
-				}
-				penalties := DecodePenaltiesFromHeader(prevCheckpointHeader.Penalties)
-				if len(penalties) > 0 {
-					log.Debug("Removing recent epoch penalties", "number", number,
-						"epochAgo", i, "checkpointNumber", prevCheckpointBlockNumber, "penalties", penalties)
-					validators = common.SetSubstract(validators, penalties)
-				}
-
-			}
-		}
-		// compare validators computed from state with header.Extra
 		headerValidators := ExtractValidatorsFromCheckpointHeader(header)
-		validValidators := common.AreSimilarSlices(headerValidators, validators)
+		// compare penalties computed from state with header.Penalties
+		if bytes.Equal(penaltiesBuff, header.Penalties) {
+			validPenalty = true
+		}
+		if validPenalty {
+			// remove penalized validators in current epoch
+			if len(penalties) > 0 {
+				log.Info("Removing current epoch penalties", "number", number, "penalties", penalties)
+				validators = common.SetSubstract(validators, penalties)
+			}
+			// remove penalized validators in recent epochs
+			for i := uint64(1); i <= chain.Config().Viction.PenaltyEpochCount; i++ {
+				if number > (i * c.config.Epoch) {
+					prevCheckpointBlockNumber := number - (i * c.config.Epoch)
+					prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
+					if prevCheckpointHeader == nil {
+						return fmt.Errorf("couldn't retrieve previous checkpoint header for penalty verification")
+					}
+					penalties := DecodePenaltiesFromHeader(prevCheckpointHeader.Penalties)
+					if len(penalties) > 0 {
+						log.Debug("Removing recent epoch penalties", "number", number,
+							"epochAgo", i, "checkpointNumber", prevCheckpointBlockNumber, "penalties", penalties)
+						validators = common.SetSubstract(validators, penalties)
+					}
 
-		if validValidators {
-			break
+				}
+			}
+			// compare validators computed from state with header.Extra
+			validValidators := common.AreSimilarSlices(headerValidators, validators)
+
+			if validValidators {
+				break
+			}
 		}
 		// if not matched, try to get validators from smart contract and verify again
 		if retryCount == 0 {
