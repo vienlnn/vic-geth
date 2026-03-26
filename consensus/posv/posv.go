@@ -388,7 +388,7 @@ func (c *Posv) Prepare(chainH consensus.ChainHeaderReader, header *types.Header)
 	if number%c.config.Epoch == 0 {
 		validators := snap.GetSigners()
 		// remove penalized validators in current epoch
-		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain)
+		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain, validators)
 		if err != nil {
 			return err
 		}

@@ -46,13 +46,13 @@ func (s *Ethereum) PosvGetBlockSignData(config *params.ChainConfig, vicConfig *p
 	}
 	data := []types.Transaction{}
 
-	// Before TIPSigning, block-sign txs are EVM-executed and may fail.
+	// Block-sign txs are EVM-executed and may fail.
 	// Only successful signing txs count toward rewards and penalties.
 	//
 	// On post-Byzantium receipt format, `Receipt.Status` is the correct source
 	// of success/failure. Using `len(PostState)` is unreliable and can misclassify.
 	var receipts types.Receipts
-	if config != nil && !config.IsTIPSigning(blockNumber) {
+	if config != nil {
 		receipts = s.blockchain.GetReceiptsByHash(blockHash)
 	}
 	txs := block.Transactions()
@@ -178,9 +178,10 @@ func (s *Ethereum) PosvDistributeEpochRewards(header *types.Header, state *state
 func (s *Ethereum) PosvGetPenalties(c *posv.Posv, config *params.ChainConfig, posvConfig *params.PosvConfig, vicConfig *params.VictionConfig,
 	header *types.Header,
 	chain consensus.ChainReader,
+	validators []common.Address,
 ) ([]common.Address, error) {
 	if config.IsTIPSigning(header.Number) {
-		return viction.PenalizeValidatorsTIPSigning(c, config, posvConfig, vicConfig, header, chain)
+		return viction.PenalizeValidatorsTIPSigning(c, config, posvConfig, vicConfig, header, chain, validators)
 	}
 	return viction.PenalizeValidatorsDefault(s.BlockChain(), c, config, posvConfig, vicConfig, header, chain)
 }
