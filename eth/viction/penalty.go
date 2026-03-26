@@ -85,17 +85,18 @@ func PenalizeValidatorsTIPSigning(c *posv.Posv, config *params.ChainConfig, posv
 	// Count number of blocks mined by each validator
 	epochBlockHashes := make([]common.Hash, posvConfig.Epoch)
 	blockMiningCounts := map[common.Address]uint64{}
-	blockHash := header.ParentHash
-	for i := uint64(0); i < posvConfig.Epoch; i++ {
-		epochBlockHashes[i] = blockHash
-		header := chain.GetHeaderByHash(blockHash)
-		miner, _ := c.Author(header)
+	epochBlockHashes[0] = header.ParentHash
+	parentHash := header.ParentHash
+	for i := uint64(1); i < posvConfig.Epoch; i++ {
+		parentHeader := chain.GetHeaderByHash(parentHash)
+		miner, _ := c.Author(parentHeader)
 		if count, ok := blockMiningCounts[miner]; ok {
 			blockMiningCounts[miner] = count + 1
 		} else {
 			blockMiningCounts[miner] = 1
 		}
-		blockHash = header.ParentHash
+		parentHash = parentHeader.ParentHash
+		epochBlockHashes[i] = parentHash
 	}
 
 	// Penalize validators didn't create block or lower than required
