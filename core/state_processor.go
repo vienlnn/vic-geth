@@ -40,6 +40,11 @@ type StateProcessor struct {
 	// tradingEngine holds the legacy TomoX blackbox for replaying historical
 	// orders during sync. Set via SetTradingEngine(). Nil when TomoX is not needed.
 	tradingEngine TradingEngine
+
+	// lendingEngine holds the legacy TomoZ lending engine for replaying historical
+	// lending orders and liquidations during sync. Set via SetLendingEngine(). Nil when
+	// TomoZ lending is not needed.
+	lendingEngine LendingEngine
 }
 
 // NewStateProcessor initialises a new StateProcessor.

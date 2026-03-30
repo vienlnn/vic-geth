@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vrc25"
 	"github.com/ethereum/go-ethereum/legacy/tomox/tradingstate"
+	"github.com/ethereum/go-ethereum/legacy/tomoxlending/lendingstate"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -50,6 +51,11 @@ type victionProcessorState struct {
 	// Initialized per block in beforeProcess from the parent block's trading root.
 	// Only non-nil for pre-Atlas blocks where TomoX was active.
 	tradingStateDB *tradingstate.TradingStateDB
+
+	// lendingStateDB is the parallel Merkle trie for lending order books.
+	// Initialized per block in beforeProcess from the parent block's lending root.
+	// Only non-nil for pre-Atlas blocks where TomoZ lending was active.
+	lendingStateDB *lendingstate.LendingStateDB
 }
 
 func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateDB) error {
@@ -86,16 +92,30 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 			}
 			p.victionState.tradingStateDB = tradingState
 
-			// At epoch boundaries, update medium prices before any order matching.
-			// Intentional soft failure: epoch price is best-effort, not consensus-critical.
 			if header.Number.Uint64()%p.config.Posv.Epoch == 0 {
 				if err := p.tradingEngine.UpdateMediumPriceBeforeEpoch(
 					header.Number.Uint64()/p.config.Posv.Epoch,
 					tradingState, statedb,
 				); err != nil {
-					log.Error("TomoX: UpdateMediumPriceBeforeEpoch failed", "block", header.Number, "err", err)
+					return fmt.Errorf("TomoX: UpdateMediumPriceBeforeEpoch failed at block %d: %w", header.Number, err)
 				}
 			}
+		}
+	}
+
+	// Requires tradingStateDB to already be initialized: lending order matching needs both states.
+	if !p.config.IsAtlas(header.Number) && p.lendingEngine != nil && p.config.Posv != nil &&
+		p.config.IsTIPTomoXLending(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch &&
+		p.victionState.tradingStateDB != nil {
+
+		parent := p.bc.GetBlock(header.ParentHash, header.Number.Uint64()-1)
+		if parent != nil {
+			parentAuthor, _ := p.engine.Author(parent.Header())
+			lendingState, err := p.lendingEngine.GetLendingState(parent, parentAuthor)
+			if err != nil {
+				return fmt.Errorf("TomoZ: failed to open LendingStateDB at block %d: %w", header.Number, err)
+			}
+			p.victionState.lendingStateDB = lendingState
 		}
 	}
 
@@ -121,6 +141,22 @@ func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB
 				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
 		}
 		log.Debug("TomoX: trading state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
+	}
+
+	// Mirrors victionchain: gate on tradingStateDB (not lendingEngine).
+	if p.victionState != nil && p.victionState.lendingStateDB != nil && p.victionState.tradingStateDB != nil {
+		gotRoot := p.victionState.lendingStateDB.IntermediateRoot()
+		blockAuthor, err := p.engine.Author(block.Header())
+		if err != nil {
+			return fmt.Errorf("TomoZ: failed to resolve block author at block %d: %w", block.NumberU64(), err)
+		}
+		// Both trading and lending roots live in the same 0x92 tx — filter on TradingStateContract.
+		expectRoot := GetLendingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor, p.config)
+		if gotRoot != expectRoot {
+			return fmt.Errorf("TomoZ: lending state root mismatch at block %d: got %s, expected %s",
+				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
+		}
+		log.Debug("TomoZ: lending state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
 	}
 
 	return nil
@@ -182,7 +218,7 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 
 		// 0x93 — Lending matching batch
 		if to == vicConfig.LendingContract && p.config.IsTIPTomoXLending(header.Number) {
-			return p.applyEmptyTransaction(statedb, tx, header, usedGas)
+			return p.applyLendingTx(statedb, tx, header, usedGas)
 		}
 
 		// 0x94 — Lending finalized trade (liquidation)
@@ -308,6 +344,11 @@ func (p *StateProcessor) SetTradingEngine(engine TradingEngine) {
 	p.tradingEngine = engine
 }
 
+// SetLendingEngine injects the legacy TomoZ lending engine into the state processor.
+func (p *StateProcessor) SetLendingEngine(engine LendingEngine) {
+	p.lendingEngine = engine
+}
+
 // applyTomoXTx decodes and replays TomoX order matches from a 0x91 transaction.
 // During sync, it decodes the TxMatchBatch, replays each order via CommitOrder
 // (mutating both the state and the trading orderbook), and returns an empty receipt.
@@ -369,6 +410,82 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 
 	return true, receipt, 0, nil, nil
+}
+
+// applyLendingTx decodes and replays TomoZ lending order matches from a 0x93 transaction.
+// TxLendingBatch.Data is []*LendingItem — elements are already decoded, no DecodeOrder() wrapper.
+func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transaction, header *types.Header, usedGas *uint64) (bool, *types.Receipt, uint64, error, *big.Int) {
+	var root []byte
+	if p.config.IsByzantium(header.Number) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(p.config.IsEIP158(header.Number)).Bytes()
+	}
+
+	if len(tx.Data()) > 0 &&
+		p.victionState != nil &&
+		p.victionState.lendingStateDB != nil &&
+		p.victionState.tradingStateDB != nil &&
+		p.lendingEngine != nil {
+
+		txMatchBatch, err := lendingstate.DecodeTxLendingBatch(tx.Data())
+		if err != nil {
+			return true, nil, 0, fmt.Errorf("TomoZ: failed to decode TxLendingBatch tx=%s: %w", tx.Hash().Hex(), err), nil
+		}
+
+		coinbase := header.Coinbase
+		lendingStateDB := p.victionState.lendingStateDB
+		tradingStateDB := p.victionState.tradingStateDB
+
+		for i, order := range txMatchBatch.Data {
+			if order == nil {
+				continue
+			}
+			lendingOrderBook := lendingstate.GetLendingOrderBookHash(order.LendingToken, order.Term)
+			trades, rejects, err := p.lendingEngine.CommitOrder(
+				header, coinbase, p.bc, statedb,
+				lendingStateDB, tradingStateDB, lendingOrderBook, order,
+			)
+			if err != nil {
+				return true, nil, 0, fmt.Errorf("TomoZ: CommitOrder failed index=%d: %w", i, err), nil
+			}
+			if len(rejects) > 0 {
+				log.Debug("TomoZ: lending orders rejected", "count", len(rejects))
+			}
+			_ = trades
+		}
+	}
+
+	receipt := types.NewReceipt(root, false, *usedGas)
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = 0
+	txLog := &types.Log{}
+	txLog.Address = *tx.To()
+	txLog.BlockNumber = header.Number.Uint64()
+	statedb.AddLog(txLog)
+	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	return true, receipt, 0, nil, nil
+}
+
+// GetLendingStateRoot extracts the lending state root from the 0x92 transaction.
+// The 0x92 tx data format: [32 bytes trading root | ≥32 bytes lending root]
+// Uses tx.Data()[32:] — common.BytesToHash crops the last 32 bytes when input > 32 bytes.
+// Filters on TradingStateContract (0x92) — same tx as trading root, second slot.
+func GetLendingStateRoot(block *types.Block, tradingStateAddr common.Address, author common.Address, config *params.ChainConfig) common.Hash {
+	signer := types.MakeSigner(config, block.Number())
+	for _, tx := range block.Transactions() {
+		if tx.To() == nil || *tx.To() != tradingStateAddr {
+			continue
+		}
+		from, err := types.Sender(signer, tx)
+		if err != nil || from != author {
+			continue
+		}
+		if len(tx.Data()) >= 64 {
+			return common.BytesToHash(tx.Data()[32:])
+		}
+	}
+	return lendingstate.EmptyRoot
 }
 
 // GetTradingStateRoot extracts the trading state root from the 0x92 transaction
