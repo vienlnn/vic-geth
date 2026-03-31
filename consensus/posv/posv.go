@@ -113,6 +113,8 @@ var (
 
 	errInvalidBlockAttestor = errors.New("invalid block attestor")
 
+	errInvalidNewAttestors = errors.New("invalid new attestors on checkpoint block")
+
 	// errInvalidVotingChain is returned if an authorization list is attempted to
 	// be modified via out-of-range or non-contiguous headers.
 	errInvalidVotingChain = errors.New("invalid voting chain")
