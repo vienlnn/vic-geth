@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-
-	"github.com/ethereum/go-ethereum/log"
 )
 
 // Decrypt encrypted data using AES CFB mode,
@@ -47,13 +45,9 @@ func DecryptRandomize(secrets [][32]byte, opening [32]byte) (int64, error) {
 			if err != nil {
 				return -1, err
 			}
-			if isInt(decryptSecret) {
-				intNumber, err := strconv.Atoi(decryptSecret)
-				if err != nil {
-					log.Error("Can not convert string to integer", "error", err)
-					return -1, err
-				}
-				random = int64(intNumber)
+			intNumber, err := strconv.ParseInt(decryptSecret, 10, 64)
+			if err == nil {
+				random = intNumber
 			}
 		}
 	}
@@ -71,13 +65,4 @@ func GenerateSequence(start, step, repeat int64) []int64 {
 	}
 
 	return s
-}
-
-// Helper function check string is numeric.
-func isInt(strNumber string) bool {
-	if _, err := strconv.Atoi(strNumber); err == nil {
-		return true
-	} else {
-		return false
-	}
 }
