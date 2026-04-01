@@ -198,8 +198,7 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	}
 	headerValidators := ExtractValidatorsFromCheckpointHeader(header)
 
-	// Remove penalties recorded on the last PenaltyEpochCount checkpoint headers (same role as
-	// the RemovePenaltiesFromBlock loop over 1..LimitPenaltyEpoch in checkSignersOnCheckpoint).
+	// Remove penalties recorded on the last PenaltyEpochCount checkpoint headers
 	subtractRecentPenalties := func(vs []common.Address) ([]common.Address, error) {
 		for i := uint64(1); i <= chain.Config().Viction.PenaltyEpochCount; i++ {
 			if number <= (i * c.config.Epoch) {
@@ -224,10 +223,6 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	// against a given validator set. Returns nil on full match or a concrete error.
 	validateWithValidators := func(baseValidators []common.Address) error {
 		// ExtractValidatorsFromCheckpointHeader reads checkpoint masternodes from header.Extra
-		// (between ExtraVanity and ExtraSeal), matching masternodesFromCheckpointHeader in
-		// checkSignersOnCheckpoint. Penalties vs header use EncodePenaltiesForHeader, same layout
-		// as concatenated 20-byte addresses (ExtractAddressToBytes in the reference).
-
 		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain, baseValidators)
 		if err != nil {
 			return err
@@ -240,7 +235,7 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 			return errInvalidCheckpointPenalties
 		}
 
-		// signers with current-epoch penalties removed (RemoveItemFromArray(signers, penPenalties)).
+		// signers with current-epoch penalties removed.
 		workingValidators := baseValidators
 		if len(penalties) > 0 {
 			log.Info("Removing current epoch penalties", "number", number, "penalties", penalties)
