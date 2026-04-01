@@ -37,23 +37,22 @@ func DecryptAesCfb(key []byte, cryptoText string) (string, error) {
 
 // Decrypt randomize using secret and opening pair.
 func DecryptRandomize(secrets [][32]byte, opening [32]byte) (int64, error) {
+	var random int64
 	if len(secrets) > 0 {
-		result := int64(0)
 		for _, secret := range secrets {
-			ciphr := bytes.TrimLeft(secret[:], "\x00")
-			text, err := DecryptAesCfb(opening[:], string(ciphr))
+			trimSecret := bytes.TrimLeft(secret[:], "\x00")
+			decryptSecret, err := DecryptAesCfb(opening[:], string(trimSecret))
 			if err != nil {
 				return -1, err
 			}
-			number, err := strconv.ParseInt(text, 10, 64)
-			if err != nil {
-				return -1, err
+			intNumber, err := strconv.ParseInt(decryptSecret, 10, 64)
+			if err == nil {
+				random = intNumber
 			}
-			result = number
 		}
-		return result, nil
 	}
-	return -1, nil
+
+	return random, nil
 }
 
 // Generate a dynamic array from *start*, increase by *step* unit by *repeat* times.
