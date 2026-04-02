@@ -30,7 +30,8 @@ func StorageLocationOfMappingElement(mappingSlot StorageLocation, elementKey []b
 }
 
 func StorageLocationOfStructElement(structSlot StorageLocation, fieldIndex *big.Int) StorageLocation {
-	return StorageLocation(new(big.Int).Add(structSlot.Big(), fieldIndex).Bytes())
+	sum := new(big.Int).Add(structSlot.Big(), fieldIndex)
+	return StorageLocation(common.BigToHash(sum).Bytes())
 }
 
 func StorageLocationOfDynamicArrayElement(arraySlot StorageLocation, elementIndex uint64, elementSize uint64) StorageLocation {
