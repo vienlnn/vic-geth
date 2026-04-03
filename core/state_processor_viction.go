@@ -50,6 +50,16 @@ type victionProcessorState struct {
 	// Initialized per block in beforeProcess from the parent block's trading root.
 	// Only non-nil for pre-Atlas blocks where TomoX was active.
 	tradingStateDB *tradingstate.TradingStateDB
+
+	// Pre-Atlas VRC25 fee tracking. victionchain snapshots all registered token
+	// fee capacities before the tx loop and decrements them per sponsored tx
+	// (state_processor.go:98-151). The final updated balances and total fee are
+	// written to state once at afterProcess via UpdateTRC21Fee / UpdateFeeCapacity.
+	// Post-Atlas these writes happen inside the tx via vrc25BuyGas/vrc25RefundGas
+	// and this map is unused.
+	trc21FeeBalance map[common.Address]*big.Int // running snapshot: token → remaining cap
+	trc21FeeUpdated map[common.Address]*big.Int // tokens that had fees charged: token → final cap
+	trc21TotalFee   *big.Int                    // sum of all fees charged across the block
 }
 
 func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateDB) error {
@@ -58,6 +68,8 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	// Initialize victionState for this block.
 	p.victionState = &victionProcessorState{
 		currentBlockNumber: new(big.Int).Set(header.Number),
+		trc21FeeUpdated:    map[common.Address]*big.Int{},
+		trc21TotalFee:      new(big.Int),
 	}
 
 	if p.config.TIPSigningBlock != nil && p.config.TIPSigningBlock.Cmp(header.Number) == 0 {
@@ -68,6 +80,15 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	}
 	if p.config.SaigonBlock != nil && p.config.SaigonBlock.Cmp(block.Number()) <= 0 {
 		misc.ApplySaigonHardFork(statedb, p.config.Viction, p.config.SaigonBlock, block.Number())
+	}
+
+	// Pre-Atlas: snapshot all registered VRC25 token fee capacities so per-tx
+	// eligibility checks use the running map rather than live state reads.
+	// This matches victionchain's GetTRC21FeeCapacityFromStateWithCache call
+	// before the transaction loop (state_processor.go:98).
+	if !p.config.IsAtlas(header.Number) && p.config.IsTIPTRC21Fee(header.Number) &&
+		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) {
+		p.victionState.trc21FeeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
 	}
 
 	// --- TomoX TradingStateDB initialization ---
@@ -106,6 +127,15 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 }
 
 func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB) error {
+	// Pre-Atlas: flush accumulated VRC25 fee updates to state. victionchain calls
+	// UpdateTRC21Fee after the tx loop (state_processor.go:149-151) to write the
+	// final per-token storage slots and subtract totalFeeUsed from the issuer contract.
+	if p.victionState != nil && !p.config.IsAtlas(block.Number()) &&
+		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) &&
+		len(p.victionState.trc21FeeUpdated) > 0 {
+		vrc25.UpdateFeeCapacity(statedb, p.config.Viction.VRC25Contract, p.victionState.trc21FeeUpdated, p.victionState.trc21TotalFee)
+	}
+
 	// --- TomoX trading root verification ---
 	// Consensus-critical: a mismatch means order matching produced different state
 	// than what the block author committed in the 0x92 tx.
@@ -260,17 +290,42 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 
 	blockNum := p.victionState.currentBlockNumber
 
-	// For failed VRC25-sponsored transactions the EVM reverts so no token transfer
-	// executes. Charge a minimum token fee to prevent free failed-tx abuse.
-	if !p.config.IsAtlas(blockNum) && tx.To() != nil &&
-		p.config.IsTIPTRC21Fee(blockNum) &&
-		receipt.Status == types.ReceiptStatusFailed {
+	if p.config.IsAtlas(blockNum) || tx.To() == nil {
+		return nil
+	}
 
-		feeCap := vrc25.GetFeeCapacity(statedb, p.config.Viction.VRC25Contract, tx.To())
-		if feeCap != nil && feeCap.Sign() > 0 {
-			vrc25.PayFeeWithVRC25(statedb, msg.From(), *tx.To())
+	token := *tx.To()
+	vicCfg := p.config.Viction
+
+	// Pre-Atlas VRC25 fee accumulation. victionchain accumulates fee into balanceUpdated
+	// and totalFeeUsed after each sponsored tx (state_processor.go:138-146).
+	// tokenFeeUsed condition: balanceFee != nil && balanceFee.Cmp(fee) == 1 (strictly >).
+	if p.victionState.trc21FeeBalance != nil {
+		runningCap, ok := p.victionState.trc21FeeBalance[token]
+		if ok && runningCap != nil {
+			// Compute fee in the same units victionchain uses: raw gasUsed pre-TIPTRC21Fee,
+			// gasUsed × TRC21GasPrice post-TIPTRC21Fee (state_processor.go:139-142).
+			fee := new(big.Int).SetUint64(usedGas)
+			if p.config.IsTIPTRC21Fee(blockNum) && vicCfg != nil && vicCfg.TRC21GasPrice != nil {
+				fee = new(big.Int).Mul(fee, (*big.Int)(vicCfg.TRC21GasPrice))
+			}
+			// tokenFeeUsed: running cap must be strictly greater than fee.
+			if runningCap.Cmp(fee) > 0 {
+				// Deduct from the running balance; record in updated map.
+				newCap := new(big.Int).Sub(runningCap, fee)
+				p.victionState.trc21FeeBalance[token] = newCap
+				p.victionState.trc21FeeUpdated[token] = newCap
+				p.victionState.trc21TotalFee.Add(p.victionState.trc21TotalFee, fee)
+
+				// Failed-tx minimum token fee: victionchain charges even when EVM reverts
+				// to prevent free failed-tx abuse (state_processor.go:488-491).
+				if receipt.Status == types.ReceiptStatusFailed {
+					vrc25.PayFeeWithVRC25(statedb, msg.From(), token)
+				}
+			}
 		}
 	}
+
 	return nil
 }
 
