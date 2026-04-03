@@ -11,16 +11,19 @@ import (
 
 // vrc25BuyGas checks VRC25 sponsorship eligibility and adjusts payer/gasPrice.
 //
-// Pre-Atlas: victionchain overrides msg.gasPrice in AsMessage (types/transaction.go:264-271)
-// to TRC21GasPriceBefore (2500) pre-TIPTRC21Fee, or TRC21GasPrice (250M) post-TIPTRC21Fee.
-// checkBalance then tests feeCap >= gasLimit × that overridden price. subtractBalance does
-// nothing when balanceFee != nil — no native balance or storage touched during the tx.
-// We replicate this by overriding st.gasPrice so eligibility and coinbase fee use the right
-// price, but we leave payer = sender so upstream SubBalance hits the sender (who has enough
-// balance because vrc25BuyGas pre-credits the sender to cover it).
+// Pre-Atlas: victionchain AsMessage overrides msg.gasPrice to TRC21GasPriceBefore (2500)
+// pre-TIPTRC21Fee or TRC21GasPrice (250M) post-TIPTRC21Fee (types/transaction.go:264-271).
+// checkBalance tests feeCap >= gasLimit × overridden price. subtractBalance does nothing
+// when balanceFee != nil — no native balance or storage touched during the tx.
+// refundGas also does nothing when balanceFee != nil.
+//
+// We set payer = VRC25Contract so isVRC25Transaction() returns true, which routes refundGas
+// through vrc25RefundGas (which returns immediately for pre-Atlas, issuing no refund).
+// We pre-credit VRC25Contract with mgval so the upstream SubBalance(payer=VRC25Contract, mgval)
+// nets to zero — the issuer's native balance is untouched during the tx, matching victionchain.
 //
 // Post-Atlas: feeCap must strictly exceed gasLimit × VRC25GasPrice. vrc25PayGas writes the
-// storage slot and SubBalance inside the same call, so we set payer = VRC25Contract and let
+// storage slot and SubBalance inside the same call; we set payer = VRC25Contract and let
 // upstream SubBalance handle the native deduction (no pre-credit needed).
 func (st *StateTransition) vrc25BuyGas() error {
 	st.payer = st.msg.From()
@@ -39,8 +42,6 @@ func (st *StateTransition) vrc25BuyGas() error {
 
 	if !st.evm.ChainConfig().IsAtlas(blockNum) {
 		// Pre-Atlas: eligibility uses the era-overridden gas price, not the user-submitted one.
-		// victionchain AsMessage sets gasPrice to TRC21GasPriceBefore (2500) pre-TIPTRC21Fee
-		// and TRC21GasPrice (250M) post-TIPTRC21Fee (types/transaction.go:264-271).
 		var effectiveGasPrice *big.Int
 		if st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
 			effectiveGasPrice = (*big.Int)(victionConfig.VRC25GasPrice) // 250,000,000
@@ -49,16 +50,16 @@ func (st *StateTransition) vrc25BuyGas() error {
 		}
 
 		mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), effectiveGasPrice)
-		// victionchain checkBalance pre-Atlas: balanceTokenFee.Cmp(mgval) < 0 → reject
-		// so sponsorship requires feeCap >= mgval.
 		if feeCap.Cmp(mgval) < 0 {
 			return nil
 		}
 
-		// Override gasPrice so coinbase fee and refund use the correct era price.
-		// Payer stays as sender; pre-credit sender so upstream SubBalance nets to zero.
+		// Set payer = VRC25Contract so isVRC25Transaction() returns true, routing refundGas
+		// through vrc25RefundGas which returns immediately for pre-Atlas (no refund issued).
+		// Pre-credit VRC25Contract so the upstream SubBalance(VRC25Contract, mgval) nets to zero.
 		st.gasPrice = effectiveGasPrice
-		st.state.AddBalance(st.msg.From(), mgval)
+		st.payer = victionConfig.VRC25Contract
+		st.state.AddBalance(victionConfig.VRC25Contract, mgval)
 		return nil
 	}
 
