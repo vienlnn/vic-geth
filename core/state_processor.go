@@ -17,6 +17,8 @@
 package core
 
 import (
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -24,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -40,6 +43,17 @@ type StateProcessor struct {
 	// tradingEngine holds the legacy TomoX blackbox for replaying historical
 	// orders during sync. Set via SetTradingEngine(). Nil when TomoX is not needed.
 	tradingEngine TradingEngine
+}
+
+var vrc25DebugTxHash = common.HexToHash("0x654d0ae8d3fbdd8382c1a5bfd2e787e16d584b43c1c04ebf114e026ca49e4d60")
+
+type txBalanceSnapshot struct {
+	sender             *big.Int
+	receiver           *big.Int
+	validator          *big.Int
+	validatorOwner     *big.Int
+	vrc25Contract      *big.Int
+	validatorOwnerAddr common.Address
 }
 
 // NewStateProcessor initialises a new StateProcessor.
@@ -85,6 +99,29 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		if err := p.beforeApplyTransaction(block, tx, msg, statedb); err != nil {
 			return nil, nil, 0, err
 		}
+		traceBalance := tx.Hash() == vrc25DebugTxHash
+		var before *txBalanceSnapshot
+		if traceBalance {
+			vrc25Contract := common.Address{}
+			if p.config != nil && p.config.Viction != nil {
+				vrc25Contract = p.config.Viction.VRC25Contract
+			}
+			before = p.captureTxBalanceSnapshot(statedb, header, msg)
+			log.Debug("VRC25 debug tx balance snapshot before",
+				"tx", tx.Hash().Hex(),
+				"block", header.Number.Uint64(),
+				"sender", msg.From().Hex(),
+				"receiver", addressPtrHex(msg.To()),
+				"validator", header.Coinbase.Hex(),
+				"validatorOwner", before.validatorOwnerAddr.Hex(),
+				"senderBalance", before.sender.String(),
+				"receiverBalance", before.receiver.String(),
+				"validatorBalance", before.validator.String(),
+				"validatorOwnerBalance", before.validatorOwner.String(),
+				"vrc25Contract", vrc25Contract.Hex(),
+				"vrc25ContractBalance", before.vrc25Contract.String(),
+			)
+		}
 		statedb.Prepare(tx.Hash(), block.Hash(), i)
 
 		// Apply Viction-specific system transactions (BlockSigner, TomoX).
@@ -104,6 +141,27 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		if err := p.afterApplyTransaction(tx, msg, statedb, receipt, receipt.GasUsed, err); err != nil {
 			return nil, nil, 0, err
 		}
+		if traceBalance {
+			after := p.captureTxBalanceSnapshot(statedb, header, msg)
+			log.Debug("VRC25 debug tx balance snapshot after",
+				"tx", tx.Hash().Hex(),
+				"status", receipt.Status,
+				"gasUsed", receipt.GasUsed,
+				"senderBalance", after.sender.String(),
+				"receiverBalance", after.receiver.String(),
+				"validatorBalance", after.validator.String(),
+				"validatorOwnerBalance", after.validatorOwner.String(),
+				"vrc25ContractBalance", after.vrc25Contract.String(),
+			)
+			log.Debug("VRC25 debug tx balance delta",
+				"tx", tx.Hash().Hex(),
+				"senderDelta", new(big.Int).Sub(after.sender, before.sender).String(),
+				"receiverDelta", new(big.Int).Sub(after.receiver, before.receiver).String(),
+				"validatorDelta", new(big.Int).Sub(after.validator, before.validator).String(),
+				"validatorOwnerDelta", new(big.Int).Sub(after.validatorOwner, before.validatorOwner).String(),
+				"vrc25ContractDelta", new(big.Int).Sub(after.vrc25Contract, before.vrc25Contract).String(),
+			)
+		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
 	}
@@ -116,6 +174,49 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 
 	return receipts, allLogs, *usedGas, nil
+}
+
+func (p *StateProcessor) captureTxBalanceSnapshot(statedb *state.StateDB, header *types.Header, msg types.Message) *txBalanceSnapshot {
+	s := &txBalanceSnapshot{
+		sender:    copyBig(statedb.GetBalance(msg.From())),
+		validator: copyBig(statedb.GetBalance(header.Coinbase)),
+	}
+	if to := msg.To(); to != nil {
+		s.receiver = copyBig(statedb.GetBalance(*to))
+	}
+	if s.receiver == nil {
+		s.receiver = new(big.Int)
+	}
+	if p.config != nil && p.config.Viction != nil {
+		s.vrc25Contract = copyBig(statedb.GetBalance(p.config.Viction.VRC25Contract))
+		slot := state.StorageLocationOfValidatorOwner(header.Coinbase)
+		ownerHash := statedb.GetState(p.config.Viction.ValidatorContract, slot)
+		s.validatorOwnerAddr = common.BytesToAddress(ownerHash.Bytes())
+		if s.validatorOwnerAddr != (common.Address{}) {
+			s.validatorOwner = copyBig(statedb.GetBalance(s.validatorOwnerAddr))
+		}
+	}
+	if s.vrc25Contract == nil {
+		s.vrc25Contract = new(big.Int)
+	}
+	if s.validatorOwner == nil {
+		s.validatorOwner = new(big.Int)
+	}
+	return s
+}
+
+func addressPtrHex(addr *common.Address) string {
+	if addr == nil {
+		return ""
+	}
+	return addr.Hex()
+}
+
+func copyBig(v *big.Int) *big.Int {
+	if v == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(v)
 }
 
 func applyTransaction(msg types.Message, config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {

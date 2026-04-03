@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/vrc25"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 var slotTokensState = vrc25.SlotVRC25Contract["tokensState"]
@@ -22,6 +23,7 @@ func (st *StateTransition) vrc25BuyGas() error {
 		return nil // Not sponsored, proceed with standard user payment
 	}
 	victionConfig := st.evm.ChainConfig().Viction
+	feeCapBefore := new(big.Int).Set(feeCap)
 
 	// 2. Calculate Gas Cost with VRC25 Gas Price
 	vrc25GasFee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), (*big.Int)(victionConfig.VRC25GasPrice))
@@ -41,6 +43,15 @@ func (st *StateTransition) vrc25BuyGas() error {
 	// This ensures buyGas() deducts native ETH from the system contract
 	st.gasPrice = (*big.Int)(victionConfig.VRC25GasPrice)
 	st.payer = victionConfig.VRC25Contract
+	log.Debug("VRC25 sponsorship selected",
+		"from", st.msg.From().Hex(),
+		"to", addressPtrHex(st.msg.To()),
+		"payer", st.payer.Hex(),
+		"feeCapBefore", feeCapBefore.String(),
+		"feeCapAfter", newFeeCap.String(),
+		"vrc25GasFee", vrc25GasFee.String(),
+		"vrc25GasPrice", st.gasPrice.String(),
+	)
 
 	return nil
 }
@@ -61,11 +72,26 @@ func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 			newFeeCap := new(big.Int).Add(feeCap, remaining)
 			feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), addr.Hash().Bytes())
 			st.state.SetState(vrc25Contract, feeCapKey.Hash(), common.BigToHash(newFeeCap))
+			log.Debug("VRC25 refund to fee capacity",
+				"to", addressPtrHex(addr),
+				"remaining", remaining.String(),
+				"feeCapBefore", feeCap.String(),
+				"feeCapAfter", newFeeCap.String(),
+			)
 		}
 	}
 
 	// Return native ETH to the payer (VRC25Contract for sponsored txs, sender otherwise).
+	payerBefore := new(big.Int).Set(st.state.GetBalance(st.payer))
 	st.state.AddBalance(st.payer, remaining)
+	if st.isVRC25Transaction() {
+		log.Debug("VRC25 native gas refund",
+			"payer", st.payer.Hex(),
+			"remaining", remaining.String(),
+			"payerBalanceBefore", payerBefore.String(),
+			"payerBalanceAfter", st.state.GetBalance(st.payer).String(),
+		)
+	}
 }
 
 // applyTransactionFee distributes the transaction fee to the correct recipient.
@@ -100,7 +126,16 @@ func (st *StateTransition) applyTransactionFee() {
 
 	// Before TIPTRC21Fee fork: fee goes to the block coinbase.
 	if !st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+		coinbaseBefore := new(big.Int).Set(st.state.GetBalance(st.evm.Context.Coinbase))
 		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
+		if st.isVRC25Transaction() {
+			log.Debug("VRC25 fee to coinbase",
+				"coinbase", st.evm.Context.Coinbase.Hex(),
+				"txFee", txFee.String(),
+				"coinbaseBalanceBefore", coinbaseBefore.String(),
+				"coinbaseBalanceAfter", st.state.GetBalance(st.evm.Context.Coinbase).String(),
+			)
+		}
 		return
 	}
 
@@ -109,6 +144,22 @@ func (st *StateTransition) applyTransactionFee() {
 	ownerHash := st.state.GetState(victionCfg.ValidatorContract, slot)
 	owner := common.BytesToAddress(ownerHash.Bytes())
 	if owner != (common.Address{}) {
+		ownerBefore := new(big.Int).Set(st.state.GetBalance(owner))
 		st.state.AddBalance(owner, txFee)
+		if st.isVRC25Transaction() {
+			log.Debug("VRC25 fee to validator owner",
+				"owner", owner.Hex(),
+				"coinbase", st.evm.Context.Coinbase.Hex(),
+				"txFee", txFee.String(),
+				"ownerBalanceBefore", ownerBefore.String(),
+				"ownerBalanceAfter", st.state.GetBalance(owner).String(),
+			)
+		}
+	} else if st.isVRC25Transaction() {
+		log.Debug("VRC25 fee recipient missing owner",
+			"coinbase", st.evm.Context.Coinbase.Hex(),
+			"validatorContract", victionCfg.ValidatorContract.Hex(),
+			"txFee", txFee.String(),
+		)
 	}
 }

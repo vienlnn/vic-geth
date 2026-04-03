@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -182,6 +183,7 @@ func (st *StateTransition) buyGas() error {
 	}
 
 	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
+	payerBefore := new(big.Int).Set(st.state.GetBalance(st.payer))
 	if have, want := st.state.GetBalance(st.payer), mgval; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.payer.Hex(), have, want)
 	}
@@ -192,6 +194,18 @@ func (st *StateTransition) buyGas() error {
 
 	st.initialGas = st.msg.Gas()
 	st.state.SubBalance(st.payer, mgval)
+	if st.isVRC25Transaction() {
+		log.Debug("VRC25 buy gas debit",
+			"from", st.msg.From().Hex(),
+			"to", addressPtrHex(st.msg.To()),
+			"payer", st.payer.Hex(),
+			"gasLimit", st.msg.Gas(),
+			"gasPrice", st.gasPrice.String(),
+			"gasCost", mgval.String(),
+			"payerBalanceBefore", payerBefore.String(),
+			"payerBalanceAfter", st.state.GetBalance(st.payer).String(),
+		)
+	}
 	return nil
 }
 
@@ -238,6 +252,15 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
+	if st.isVRC25Transaction() {
+		log.Debug("VRC25 transition begin",
+			"from", st.msg.From().Hex(),
+			"to", addressPtrHex(st.msg.To()),
+			"payer", st.payer.Hex(),
+			"nonce", st.msg.Nonce(),
+			"value", st.msg.Value().String(),
+		)
+	}
 	msg := st.msg
 	sender := vm.AccountRef(msg.From())
 	homestead := st.evm.ChainConfig().IsHomestead(st.evm.Context.BlockNumber)
@@ -273,6 +296,18 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	}
 	st.refundGas()
 	st.applyTransactionFee()
+	if st.isVRC25Transaction() {
+		log.Debug("VRC25 transition end",
+			"from", st.msg.From().Hex(),
+			"to", addressPtrHex(st.msg.To()),
+			"payer", st.payer.Hex(),
+			"usedGas", st.gasUsed(),
+			"senderBalance", st.state.GetBalance(st.msg.From()).String(),
+			"payerBalance", st.state.GetBalance(st.payer).String(),
+			"coinbase", st.evm.Context.Coinbase.Hex(),
+			"coinbaseBalance", st.state.GetBalance(st.evm.Context.Coinbase).String(),
+		)
+	}
 
 	return &ExecutionResult{
 		UsedGas:    st.gasUsed(),
