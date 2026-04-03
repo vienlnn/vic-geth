@@ -107,8 +107,10 @@ func (st *StateTransition) applyTransactionFee() {
 	victionCfg := st.evm.ChainConfig().Viction
 	blockNum := st.evm.Context.BlockNumber
 
-	txFee := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
-
+	txFee := new(big.Int).SetUint64(st.gasUsed())
+	if st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+		txFee = new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+	}
 	if victionCfg == nil {
 		// Non-Viction chain: fee always goes to the coinbase.
 		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
