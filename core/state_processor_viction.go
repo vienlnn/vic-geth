@@ -85,8 +85,10 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	// Pre-Atlas: snapshot all registered VRC25 token fee capacities so per-tx
 	// eligibility checks use the running map rather than live state reads.
 	// This matches victionchain's GetTRC21FeeCapacityFromStateWithCache call
-	// before the transaction loop (state_processor.go:98).
-	if !p.config.IsAtlas(header.Number) && p.config.IsTIPTRC21Fee(header.Number) &&
+	// before the transaction loop (blockchain.go:1674-1676). Note: victionchain
+	// gates this only on !IsAtlas — there is no IsTIPTRC21Fee guard — so the
+	// snapshot runs for all pre-Atlas blocks, including pre-TIPTRC21Fee blocks.
+	if !p.config.IsAtlas(header.Number) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) {
 		p.victionState.trc21FeeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
 	}
