@@ -10,21 +10,6 @@ import (
 )
 
 // vrc25BuyGas checks VRC25 sponsorship eligibility and adjusts payer/gasPrice.
-//
-// Pre-Atlas: victionchain AsMessage overrides msg.gasPrice to TRC21GasPriceBefore (2500)
-// pre-TIPTRC21Fee or TRC21GasPrice (250M) post-TIPTRC21Fee (types/transaction.go:264-271).
-// checkBalance tests feeCap >= gasLimit × overridden price. subtractBalance does nothing
-// when balanceFee != nil — no native balance or storage touched during the tx.
-// refundGas also does nothing when balanceFee != nil.
-//
-// We set payer = VRC25Contract so isVRC25Transaction() returns true, which routes refundGas
-// through vrc25RefundGas (which returns immediately for pre-Atlas, issuing no refund).
-// We pre-credit VRC25Contract with mgval so the upstream SubBalance(payer=VRC25Contract, mgval)
-// nets to zero — the issuer's native balance is untouched during the tx, matching victionchain.
-//
-// Post-Atlas: feeCap must strictly exceed gasLimit × VRC25GasPrice. vrc25PayGas writes the
-// storage slot and SubBalance inside the same call; we set payer = VRC25Contract and let
-// upstream SubBalance handle the native deduction (no pre-credit needed).
 func (st *StateTransition) vrc25BuyGas() error {
 	st.payer = st.msg.From()
 
@@ -41,7 +26,6 @@ func (st *StateTransition) vrc25BuyGas() error {
 	blockNum := st.evm.Context.BlockNumber
 
 	if !st.evm.ChainConfig().IsAtlas(blockNum) {
-		// Pre-Atlas: eligibility uses the era-overridden gas price, not the user-submitted one.
 		var effectiveGasPrice *big.Int
 		if st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
 			effectiveGasPrice = (*big.Int)(victionConfig.VRC25GasPrice) // 250,000,000
@@ -53,25 +37,20 @@ func (st *StateTransition) vrc25BuyGas() error {
 		if feeCap.Cmp(mgval) < 0 {
 			return nil
 		}
-
-		// Set payer = VRC25Contract so isVRC25Transaction() returns true, routing refundGas
-		// through vrc25RefundGas which returns immediately for pre-Atlas (no refund issued).
-		// Pre-credit VRC25Contract so the upstream SubBalance(VRC25Contract, mgval) nets to zero.
+		// Set payer = VRC25Contract so isVRC25Transaction() returns true.
+		// buyGas will skip the balance check and SubBalance for pre-Atlas sponsored txs.
 		st.gasPrice = effectiveGasPrice
 		st.payer = victionConfig.VRC25Contract
-		st.state.AddBalance(victionConfig.VRC25Contract, mgval)
 		return nil
 	}
 
-	// Post-Atlas: victionchain checkBalance uses Cmp(vrc25val) <= 0 → not sponsored.
-	// Sponsorship requires feeCap > gasLimit × VRC25GasPrice (strictly greater).
 	vrc25GasPrice := (*big.Int)(victionConfig.VRC25GasPrice)
 	vrc25GasFee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), vrc25GasPrice)
 	if feeCap.Cmp(vrc25GasFee) <= 0 {
 		return nil
 	}
 
-	// Deduct storage slot (vrc25PayGas equivalent for the pre-execution part).
+	// Deduct storage slot upfront (vrc25PayGas equivalent).
 	newFeeCap := new(big.Int).Sub(feeCap, vrc25GasFee)
 	vrc25.SetFeeCapacity(st.state, victionConfig.VRC25Contract, *st.msg.To(), newFeeCap)
 

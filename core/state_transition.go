@@ -181,16 +181,20 @@ func (st *StateTransition) buyGas() error {
 		return err
 	}
 
-	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
-	if have, want := st.state.GetBalance(st.payer), mgval; have.Cmp(want) < 0 {
-		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.payer.Hex(), have, want)
-	}
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
 	st.gas += st.msg.Gas()
 
 	st.initialGas = st.msg.Gas()
+	// Pre-Atlas sponsored tx
+	if st.isVRC25Transaction() && !st.evm.ChainConfig().IsAtlas(st.evm.Context.BlockNumber) {
+		return nil
+	}
+	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
+	if have, want := st.state.GetBalance(st.payer), mgval; have.Cmp(want) < 0 {
+		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.payer.Hex(), have, want)
+	}
 	st.state.SubBalance(st.payer, mgval)
 	return nil
 }
