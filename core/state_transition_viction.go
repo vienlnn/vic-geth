@@ -50,10 +50,6 @@ func (st *StateTransition) vrc25BuyGas() error {
 		return nil
 	}
 
-	// Deduct storage slot upfront (vrc25PayGas equivalent).
-	newFeeCap := new(big.Int).Sub(feeCap, vrc25GasFee)
-	vrc25.SetFeeCapacity(st.state, victionConfig.VRC25Contract, *st.msg.To(), newFeeCap)
-
 	st.gasPrice = vrc25GasPrice
 	st.payer = victionConfig.VRC25Contract
 	return nil
@@ -64,35 +60,26 @@ func (st *StateTransition) isVRC25Transaction() bool {
 }
 
 // vrc25RefundGas handles gas refund for sponsored transactions.
-//
-// Pre-Atlas sponsored: victionchain refundGas does nothing when balanceFee != nil
-// (state_transition.go:349-355). No native balance change, no storage restore.
-//
-// Post-Atlas sponsored: restore unused feeCap to the storage slot and credit native
-// balance back to the issuer contract (vrc25RefundGas, state_transition.go:384-395).
 func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 	if st.isVRC25Transaction() {
 		blockNum := st.evm.Context.BlockNumber
 		if !st.evm.ChainConfig().IsAtlas(blockNum) {
-			// Pre-Atlas: nothing — victionchain does not touch any balance or storage
-			// on refund when balanceFee != nil (state_transition.go:349-355).
+			// Pre-Atlas: nothing
 			return
 		}
 
-		// Post-Atlas: restore unused feeCap to storage and native balance.
+		// Post-Atlas: deduct exactly gasUsed×price from the token's storage slot once.
 		addr := st.msg.To()
 		victionConfig := st.evm.ChainConfig().Viction
 		vrc25Contract := victionConfig.VRC25Contract
 		feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
 		if feeCap != nil {
-			storageRemaining := new(big.Int).Mul(
-				new(big.Int).SetUint64(st.gas),
+			gasUsedFee := new(big.Int).Mul(
+				new(big.Int).SetUint64(st.gasUsed()),
 				(*big.Int)(victionConfig.VRC25GasPrice),
 			)
-			vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Add(feeCap, storageRemaining))
+			vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Sub(feeCap, gasUsedFee))
 		}
-		// Refund remaining gas value to the issuer contract (payer)
-		st.state.AddBalance(st.payer, remaining)
 		return
 	}
 

@@ -105,10 +105,6 @@ func SetFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, token comm
 
 // GetAllFeeCapacities reads the entire tokensState mapping from the VRC25 issuer
 // contract and returns a snapshot of every registered token's fee capacity.
-// Used at the start of pre-Atlas block processing (beforeProcess) so that
-// per-transaction eligibility checks use the snapshotted map rather than
-// live state reads, matching victionchain's GetTRC21FeeCapacityFromStateWithCache
-// behaviour (trc21_reader.go:27-44).
 func GetAllFeeCapacities(statedb vm.StateDB, vrc25Contract common.Address) map[common.Address]*big.Int {
 	result := map[common.Address]*big.Int{}
 
