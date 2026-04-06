@@ -112,9 +112,13 @@ func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 			)
 			vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Add(feeCap, storageRemaining))
 		}
+		// Refund remaining gas value to the issuer contract (payer)
+		st.state.AddBalance(st.payer, remaining)
+		return
 	}
 
-	st.state.AddBalance(st.payer, remaining)
+	// Non-VRC25 transaction: refund remaining gas to the sender.
+	st.state.AddBalance(st.msg.From(), remaining)
 }
 
 // applyTransactionFee distributes the transaction fee to the correct recipient.

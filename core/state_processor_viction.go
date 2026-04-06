@@ -308,8 +308,8 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 			// Compute fee in the same units victionchain uses: raw gasUsed pre-TIPTRC21Fee,
 			// gasUsed × TRC21GasPrice post-TIPTRC21Fee (state_processor.go:139-142).
 			fee := new(big.Int).SetUint64(usedGas)
-			if p.config.IsTIPTRC21Fee(blockNum) && vicCfg != nil && vicCfg.TRC21GasPrice != nil {
-				fee = new(big.Int).Mul(fee, (*big.Int)(vicCfg.TRC21GasPrice))
+			if p.config.IsTIPTRC21Fee(blockNum) && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
+				fee = new(big.Int).Mul(fee, (*big.Int)(vicCfg.VRC25GasPrice))
 			}
 			// tokenFeeUsed: running cap must be strictly greater than fee.
 			if runningCap.Cmp(fee) > 0 {
