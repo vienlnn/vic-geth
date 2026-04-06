@@ -293,7 +293,7 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 		runningCap, ok := p.victionState.FeeBalance[token]
 		if ok && runningCap != nil {
 			fee := new(big.Int).SetUint64(usedGas)
-			if p.config.IsTIPTRC21Fee(blockNum) && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
+			if p.config.TIPTRC21FeeBlock != nil && blockNum.Cmp(p.config.TIPTRC21FeeBlock) > 0 && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
 				fee = new(big.Int).Mul(fee, (*big.Int)(vicCfg.VRC25GasPrice))
 			}
 			// tokenFeeUsed: running cap must be strictly greater than fee.

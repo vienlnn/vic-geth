@@ -27,7 +27,7 @@ func (st *StateTransition) vrc25BuyGas() error {
 
 	if !st.evm.ChainConfig().IsAtlas(blockNum) {
 		var effectiveGasPrice *big.Int
-		if st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+		if st.evm.ChainConfig().TIPTRC21FeeBlock != nil && blockNum.Cmp(st.evm.ChainConfig().TIPTRC21FeeBlock) > 0 {
 			effectiveGasPrice = (*big.Int)(victionConfig.VRC25GasPrice) // 250,000,000
 		} else {
 			effectiveGasPrice = (*big.Int)(victionConfig.TRC21GasPrice) // 2,500
@@ -118,7 +118,8 @@ func (st *StateTransition) applyTransactionFee() {
 	}
 
 	// Before TIPTRC21Fee fork: fee goes to the block coinbase.
-	if !st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+	chainCfg := st.evm.ChainConfig()
+	if chainCfg.TIPTRC21FeeBlock == nil || blockNum.Cmp(chainCfg.TIPTRC21FeeBlock) <= 0 {
 		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
 		return
 	}
