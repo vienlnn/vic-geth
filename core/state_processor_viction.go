@@ -52,9 +52,9 @@ type victionProcessorState struct {
 	tradingStateDB *tradingstate.TradingStateDB
 
 	// Pre-Atlas VRC25 fee tracking.
-	FeeBalance map[common.Address]*big.Int // running snapshot: token -> remaining cap
-	FeeUpdated map[common.Address]*big.Int // tokens that had fees charged: token -> final cap
-	TotalFee   *big.Int                    // sum of all fees charged across the block
+	feeBalance map[common.Address]*big.Int // running snapshot: token -> remaining cap
+	feeUpdated map[common.Address]*big.Int // tokens that had fees charged: token -> final cap
+	totalFee   *big.Int                    // sum of all fees charged across the block
 }
 
 func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateDB) error {
@@ -63,8 +63,8 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	// Initialize victionState for this block.
 	p.victionState = &victionProcessorState{
 		currentBlockNumber: new(big.Int).Set(header.Number),
-		FeeUpdated:         map[common.Address]*big.Int{},
-		TotalFee:           new(big.Int),
+		feeUpdated:         map[common.Address]*big.Int{},
+		totalFee:           new(big.Int),
 	}
 
 	if p.config.TIPSigningBlock != nil && p.config.TIPSigningBlock.Cmp(header.Number) == 0 {
@@ -81,7 +81,7 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	// eligibility checks use the running map rather than live state reads.
 	if !p.config.IsAtlas(header.Number) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) {
-		p.victionState.FeeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
+		p.victionState.feeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
 	}
 
 	// --- TomoX TradingStateDB initialization ---
@@ -123,8 +123,8 @@ func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB
 	// Pre-Atlas: flush accumulated VRC25 fee updates to state.
 	if p.victionState != nil && !p.config.IsAtlas(block.Number()) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) &&
-		len(p.victionState.FeeUpdated) > 0 {
-		vrc25.UpdateFeeCapacity(statedb, p.config.Viction.VRC25Contract, p.victionState.FeeUpdated, p.victionState.TotalFee)
+		len(p.victionState.feeUpdated) > 0 {
+		vrc25.UpdateFeeCapacity(statedb, p.config.Viction.VRC25Contract, p.victionState.feeUpdated, p.victionState.totalFee)
 	}
 
 	// --- TomoX trading root verification ---
@@ -289,8 +289,8 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 	vicCfg := p.config.Viction
 
 	// Pre-Atlas VRC25 fee accumulation.
-	if p.victionState.FeeBalance != nil {
-		runningCap, ok := p.victionState.FeeBalance[token]
+	if p.victionState.feeBalance != nil {
+		runningCap, ok := p.victionState.feeBalance[token]
 		if ok && runningCap != nil {
 			fee := new(big.Int).SetUint64(usedGas)
 			if p.config.TIPTRC21FeeBlock != nil && blockNum.Cmp(p.config.TIPTRC21FeeBlock) > 0 && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
@@ -300,9 +300,9 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 			if runningCap.Cmp(fee) > 0 {
 				// Deduct from the running balance; record in updated map.
 				newCap := new(big.Int).Sub(runningCap, fee)
-				p.victionState.FeeBalance[token] = newCap
-				p.victionState.FeeUpdated[token] = newCap
-				p.victionState.TotalFee.Add(p.victionState.TotalFee, fee)
+				p.victionState.feeBalance[token] = newCap
+				p.victionState.feeUpdated[token] = newCap
+				p.victionState.totalFee.Add(p.victionState.totalFee, fee)
 
 				// Failed-tx minimum token fee
 				if receipt.Status == types.ReceiptStatusFailed {
