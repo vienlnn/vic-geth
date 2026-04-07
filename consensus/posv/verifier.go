@@ -168,6 +168,11 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	number := header.Number.Uint64()
 	log.Debug("Verifying checkpoint validators", "number", number, "hash", header.Hash().Hex())
 
+	// ignore signerCheck at checkpoint block 14458500 due to wrong snapshot at gap 14458495
+	if number == chain.Config().TIPFixSignerCheckBlock.Uint64() {
+		return nil
+	}
+
 	// Load snapshot at the gap block (checkpoint - Gap), where UpdateMasternodes
 	// stored the updated snapshot. Resolve the gap block hash from DB first,
 	// then fall back to the in-batch parents slice.
@@ -196,12 +201,34 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 		// Use snapshot fallback, assign it to snap and continue processing below
 		snap = fallbackSnap
 	}
-	validators := snap.GetSigners()
+	headerValidators := ExtractValidatorsFromCheckpointHeader(header)
 
-	retryCount := 0
-	for retryCount < 2 {
-		// compare penalties computed from state with header.Penalties
-		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain, validators)
+	// Remove penalties recorded on the last PenaltyEpochCount checkpoint headers
+	subtractRecentPenalties := func(vs []common.Address) ([]common.Address, error) {
+		for i := uint64(1); i <= chain.Config().Viction.PenaltyEpochCount; i++ {
+			if number <= (i * c.config.Epoch) {
+				continue
+			}
+			prevCheckpointBlockNumber := number - (i * c.config.Epoch)
+			prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
+			if prevCheckpointHeader == nil {
+				return nil, fmt.Errorf("couldn't retrieve previous checkpoint header for penalty verification")
+			}
+			prevPenalties := DecodePenaltiesFromHeader(prevCheckpointHeader.Penalties)
+			if len(prevPenalties) > 0 {
+				log.Debug("Removing recent epoch penalties", "number", number,
+					"epochAgo", i, "checkpointNumber", prevCheckpointBlockNumber, "penalties", prevPenalties)
+				vs = common.SetSubstract(vs, prevPenalties)
+			}
+		}
+		return vs, nil
+	}
+
+	// Shared validator verifier: runs penalties, validator list, and attestors checks
+	// against a given validator set. Returns nil on full match or a concrete error.
+	validateWithValidators := func(baseValidators []common.Address) error {
+		// ExtractValidatorsFromCheckpointHeader reads checkpoint masternodes from header.Extra
+		penalties, err := c.backend.PosvGetPenalties(c, chain.Config(), c.config, chain.Config().Viction, header, chain, baseValidators)
 		if err != nil {
 			return err
 		}
@@ -212,67 +239,67 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 				"computedPenalties", penalties, "headerPenalties", DecodePenaltiesFromHeader(header.Penalties))
 			return errInvalidCheckpointPenalties
 		}
-		// remove penalized validators in current epoch
+
+		// signers with current-epoch penalties removed.
+		workingValidators := baseValidators
 		if len(penalties) > 0 {
 			log.Info("Removing current epoch penalties", "number", number, "penalties", penalties)
-			validators = common.SetSubstract(validators, penalties)
-			header.Penalties = EncodePenaltiesForHeader(penalties)
+			workingValidators = common.SetSubstract(workingValidators, penalties)
 		}
-		// remove penalized validators in recent epochs
-		for i := uint64(1); i <= chain.Config().Viction.PenaltyEpochCount; i++ {
-			if number > (i * c.config.Epoch) {
-				prevCheckpointBlockNumber := number - (i * c.config.Epoch)
-				prevCheckpointHeader := chain.GetHeaderByNumber(prevCheckpointBlockNumber)
-				if prevCheckpointHeader == nil {
-					return fmt.Errorf("couldn't retrieve previous checkpoint header for penalty verification")
-				}
-				penalties := DecodePenaltiesFromHeader(prevCheckpointHeader.Penalties)
-				if len(penalties) > 0 {
-					log.Debug("Removing recent epoch penalties", "number", number,
-						"epochAgo", i, "checkpointNumber", prevCheckpointBlockNumber, "penalties", penalties)
-					validators = common.SetSubstract(validators, penalties)
-				}
-
-			}
+		workingValidators, err = subtractRecentPenalties(workingValidators)
+		if err != nil {
+			return err
 		}
-		// compare validators computed from state with header.Extra
-		headerValidators := ExtractValidatorsFromCheckpointHeader(header)
-		validValidators := common.AreSimilarSlices(headerValidators, validators)
-
-		if validValidators {
-			break
-		}
-		// if not matched, try to get validators from smart contract and verify again
-		if retryCount == 0 {
-			// Try each block in [number-Gap, number-1]. For each candidate,
-			// check DB first then fall back to the in-batch parents slice.
-			var fetchErr error
-			var gapBlockHeader *types.Header
-			for gapBlockNumber := number - c.config.Gap; gapBlockNumber < number; gapBlockNumber++ {
-				gapBlockHeader = chain.GetHeaderByNumber(gapBlockNumber)
-				var vs []common.Address
-				vs, fetchErr = c.backend.PosvGetValidators(chain.Config().Viction, gapBlockHeader, chain)
-				if fetchErr == nil && len(vs) > 0 {
-					validators = vs
-					log.Info("Validators from smart contract", "checkpoint", number, "gapBlock", gapBlockNumber, "validators", validators)
-					break
-				}
-				log.Debug("PosvGetValidators failed or returned empty, trying next block",
-					"checkpoint", number, "gapBlockNumber", gapBlockNumber, "err", fetchErr)
-			}
-			if fetchErr != nil {
-				return fetchErr
-			}
-		}
-
-		// maximum retry reached, return error
-		if retryCount == 1 {
-			log.Info("Checkpoint validator mismatch", "number", number, "computedValidators", validators, "headerValidators", headerValidators)
+		if !common.AreSimilarSlices(headerValidators, workingValidators) {
+			log.Info("Checkpoint validator mismatch", "number", number, "computedValidators", workingValidators, "headerValidators", headerValidators)
 			return errInvalidCheckpointValidators
 		}
-		retryCount++
+
+		attestors, aerr := c.backend.PosvGetAttestors(chain.Config().Viction, header, workingValidators)
+		if aerr != nil {
+			log.Error("Checkpoint attestors lookup failed", "number", number, "err", aerr)
+			return aerr
+		}
+		if !bytes.Equal(EncodeAttestorsForHeader(attestors), header.NewAttestors) {
+			log.Error("NewAttestors mismatch", "number", number,
+				"computed", attestors, "header", DecodeAttestorsFromHeader(header.NewAttestors))
+			return errInvalidNewAttestors
+		}
+		return nil
 	}
-	return nil
+
+	// 1) First, validate using validators from the snapshot (gap block).
+	snapshotValidators := snap.GetSigners()
+	if err := validateWithValidators(snapshotValidators); err == nil {
+		return nil
+	} else {
+		log.Warn("Checkpoint validator verify failed with snapshot validators, will try contract validators",
+			"number", number, "err", err)
+	}
+
+	// 2) Fallback: re-run the same logic using validators read from the staking contract
+	// over the [number-Gap, number-1) window. If this also fails, bubble up that error.
+	var fetchErr error
+	var contractValidators []common.Address
+	for gap := number - c.config.Gap; gap < number; gap++ {
+		gapHeader := chain.GetHeaderByNumber(gap)
+		if gapHeader == nil {
+			continue
+		}
+		vs, err := c.backend.PosvGetValidators(chain.Config().Viction, gapHeader, chain)
+		if err == nil && len(vs) > 0 {
+			log.Info("Validators from smart contract", "checkpoint", number, "gapBlock", gap, "validators", vs)
+			contractValidators = vs
+			break
+		}
+		fetchErr = err
+		log.Debug("PosvGetValidators failed or returned empty, trying next block",
+			"checkpoint", number, "gapBlockNumber", gap, "err", err)
+	}
+	if len(contractValidators) == 0 {
+		return fetchErr
+	}
+	return validateWithValidators(contractValidators)
 }
 
 // verifySeal checks whether the signature contained in the header satisfies the

@@ -1728,7 +1728,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 
 	for i, block := range chain {
 		headers[i] = block.Header()
-		seals[i] = verifySeals
+		seals[i] = false
 	}
 	abort, results := bc.engine.VerifyHeaders(bc, headers, seals)
 	defer close(abort)

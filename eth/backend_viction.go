@@ -24,7 +24,7 @@ const SignMethodHex = "e341eaa4"
 // Get attestors from list of validators at checkpoint block.
 func (s *Ethereum) PosvGetAttestors(vicConfig *params.VictionConfig, header *types.Header, validators []common.Address,
 ) ([]int64, error) {
-	state, err := s.BlockChain().StateAt(header.Root)
+	state, err := s.BlockChain().State()
 	if err != nil {
 		return nil, err
 	}
