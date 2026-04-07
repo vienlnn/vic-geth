@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -36,9 +37,20 @@ type TradingEngine interface {
 	// GetTradingState opens the TradingStateDB trie rooted at the given block.
 	GetTradingState(block *types.Block, author common.Address) (*tradingstate.TradingStateDB, error)
 
+	// GetTradingStateRoot returns the trading state root committed in the 0x92 tx
+	// of the given block.
+	GetTradingStateRoot(block *types.Block, author common.Address) (common.Hash, error)
+
 	// UpdateMediumPriceBeforeEpoch computes epoch-averaged prices; must be called
 	// before order matching at epoch boundaries.
 	UpdateMediumPriceBeforeEpoch(epoch uint64, tradingStateDB *tradingstate.TradingStateDB, statedb *state.StateDB) error
+
+	// GetStateCache returns the trie-node cache backed by the tomox LevelDB.
+	// Used to flush trie nodes to disk after each block.
+	GetStateCache() tradingstate.Database
+
+	// GetTriegc returns the garbage-collection priority queue for the trading trie.
+	GetTriegc() *prque.Prque
 }
 
 // victionProcessorState holds per-block Viction state that is reset each block.

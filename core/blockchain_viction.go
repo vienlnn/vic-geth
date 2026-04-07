@@ -13,6 +13,66 @@ import (
 	"github.com/ethereum/go-ethereum/sortlgc"
 )
 
+// commitVictionState commits the TomoX trading trie and (if present) the TomoZ
+// lending trie to their respective LevelDB backing stores.  It must be called
+// after writeBlockWithState has already committed the main EVM state for block.
+//
+// Without this call the trie nodes for the trading/lending tries live only in
+// an in-memory trie.Database; the next block's beforeProcess would open a trie
+// whose nodes do not exist on disk and would read an empty state, causing a
+// trading-state-root mismatch.
+func (bc *BlockChain) commitVictionState(block *types.Block) error {
+	sp, ok := bc.processor.(*StateProcessor)
+	if !ok || sp.victionState == nil {
+		return nil
+	}
+
+	tradingStateDB := sp.victionState.tradingStateDB
+	lendingStateDB := sp.victionState.lendingStateDB
+
+	// Commit trading trie --------------------------------------------------
+	if tradingStateDB != nil && sp.tradingEngine != nil {
+		tradingRoot, err := tradingStateDB.Commit()
+		if err != nil {
+			return fmt.Errorf("TomoX: TradingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
+		}
+		tradingTrieDB := sp.tradingEngine.GetStateCache().TrieDB()
+
+		if bc.cacheConfig.TrieDirtyDisabled {
+			// Archive node: flush immediately.
+			if err := tradingTrieDB.Commit(tradingRoot, false, nil); err != nil {
+				return fmt.Errorf("TomoX: trading trieDB.Commit (archive) failed at block %d: %w", block.NumberU64(), err)
+			}
+		} else {
+			// Full node: keep reference for deferred GC.
+			tradingTrieDB.Reference(tradingRoot, common.Hash{})
+			sp.tradingEngine.GetTriegc().Push(tradingRoot, -int64(block.NumberU64()))
+		}
+		log.Trace("TomoX: trading trie committed", "block", block.NumberU64(), "root", tradingRoot.Hex())
+	}
+
+	// Commit lending trie --------------------------------------------------
+	if lendingStateDB != nil && sp.lendingEngine != nil {
+		lendingRoot, err := lendingStateDB.Commit()
+		if err != nil {
+			return fmt.Errorf("TomoZ: LendingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
+		}
+		lendingTrieDB := sp.lendingEngine.GetStateCache().TrieDB()
+
+		if bc.cacheConfig.TrieDirtyDisabled {
+			if err := lendingTrieDB.Commit(lendingRoot, false, nil); err != nil {
+				return fmt.Errorf("TomoZ: lending trieDB.Commit (archive) failed at block %d: %w", block.NumberU64(), err)
+			}
+		} else {
+			lendingTrieDB.Reference(lendingRoot, common.Hash{})
+			sp.lendingEngine.GetTriegc().Push(lendingRoot, -int64(block.NumberU64()))
+		}
+		log.Trace("TomoZ: lending trie committed", "block", block.NumberU64(), "root", lendingRoot.Hex())
+	}
+
+	return nil
+}
+
 // SetTradingEngine injects the TomoX trading engine into the block processor.
 func (bc *BlockChain) SetTradingEngine(engine TradingEngine) {
 	sp, ok := bc.processor.(*StateProcessor)
