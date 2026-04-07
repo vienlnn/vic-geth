@@ -17,8 +17,6 @@
 package core
 
 import (
-	"fmt"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -97,13 +95,13 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		// Apply Viction-specific system transactions (BlockSigner, TomoX).
 		handled, receipt, _, err, _ := p.applyVictionTransaction(statedb, tx, header, usedGas)
 		if err != nil {
-			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+			return nil, nil, 0, err
 		}
 
 		if !handled {
 			receipt, err = applyTransaction(msg, p.config, p.bc, nil, gp, statedb, header, tx, usedGas, vmenv)
 			if err != nil {
-				return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+				return nil, nil, 0, err
 			}
 		}
 
