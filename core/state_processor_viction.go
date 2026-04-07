@@ -371,6 +371,9 @@ func (p *StateProcessor) SetLendingEngine(engine LendingEngine) {
 }
 
 // applyTomoXTx decodes and replays a TomoX order-matching batch (0x91 transaction).
+//
+// On epoch-boundary blocks (block % Epoch == 0) skips order execution
+// entirely and only runs UpdateMediumPriceBeforeEpoch (called in beforeProcess).
 func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transaction, header *types.Header, usedGas *uint64) (bool, *types.Receipt, uint64, error, *big.Int) {
 	var root []byte
 	if p.config.IsByzantium(header.Number) {
@@ -379,7 +382,9 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 		root = statedb.IntermediateRoot(p.config.IsEIP158(header.Number)).Bytes()
 	}
 
-	if len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
+	isEpochBlock := p.config.Posv != nil && header.Number.Uint64()%p.config.Posv.Epoch == 0
+
+	if !isEpochBlock && len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		txMatchBatch, err := tradingstate.DecodeTxMatchesBatch(tx.Data())
 		if err != nil {
 			return true, nil, 0, fmt.Errorf("TomoX: failed to decode TxMatchBatch tx=%s: %w", tx.Hash().Hex(), err), nil
@@ -423,6 +428,9 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 }
 
 // applyLendingTx decodes and replays a TomoZ lending order-matching batch (0x93 transaction).
+//
+// Mirrors the epoch-skip rule from applyTomoXTx: on epoch-boundary blocks
+// skips all order execution; only UpdateMediumPriceBeforeEpoch runs that block.
 func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transaction, header *types.Header, usedGas *uint64) (bool, *types.Receipt, uint64, error, *big.Int) {
 	var root []byte
 	if p.config.IsByzantium(header.Number) {
@@ -431,7 +439,10 @@ func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transa
 		root = statedb.IntermediateRoot(p.config.IsEIP158(header.Number)).Bytes()
 	}
 
-	if len(tx.Data()) > 0 &&
+	isEpochBlock := p.config.Posv != nil && header.Number.Uint64()%p.config.Posv.Epoch == 0
+
+	if !isEpochBlock &&
+		len(tx.Data()) > 0 &&
 		p.victionState != nil &&
 		p.victionState.lendingStateDB != nil &&
 		p.victionState.tradingStateDB != nil &&
