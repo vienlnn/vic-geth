@@ -9,39 +9,49 @@ import (
 	"github.com/ethereum/go-ethereum/core/vrc25"
 )
 
-var slotTokensState = vrc25.SlotVRC25Contract["tokensState"]
-
-// buyVRC25Gas checks sponsorship eligibility and deducts the gas fee from the sponsor's storage balance.
+// vrc25BuyGas checks VRC25 sponsorship eligibility and adjusts payer/gasPrice.
 func (st *StateTransition) vrc25BuyGas() error {
-	// Default payer is the sender
 	st.payer = st.msg.From()
 
-	// 1. Check if contract is sponsored (has fee capacity)
-	feeCap := vrc25.GetFeeCapacity(st.state, st.evm.ChainConfig().Viction.VRC25Contract, st.msg.To())
-	if feeCap == nil {
-		return nil // Not sponsored, proceed with standard user payment
-	}
 	victionConfig := st.evm.ChainConfig().Viction
-
-	// 2. Calculate Gas Cost with VRC25 Gas Price
-	vrc25GasFee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), (*big.Int)(victionConfig.VRC25GasPrice))
-
-	// 3. Check sufficiency
-	if feeCap.Cmp(vrc25GasFee) < 0 {
-		return nil // Insufficient sponsor balance, fallback to user payment
+	if victionConfig == nil || victionConfig.VRC25Contract == (common.Address{}) {
+		return nil
 	}
 
-	// 4. Deduct from Contract's Storage Balance
-	// Note: The native ETH deduction happens in state_transition.go via st.state.SubBalance(st.payer)
-	newFeeCap := new(big.Int).Sub(feeCap, vrc25GasFee)
-	feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), st.msg.To().Hash().Bytes())
-	st.state.SetState(victionConfig.VRC25Contract, feeCapKey.Hash(), common.BigToHash(newFeeCap))
+	feeCap := vrc25.GetFeeCapacity(st.state, victionConfig.VRC25Contract, st.msg.To())
+	if feeCap == nil || feeCap.Sign() == 0 {
+		return nil
+	}
 
-	// 5. Set Payer to System Contract
-	// This ensures buyGas() deducts native ETH from the system contract
-	st.gasPrice = (*big.Int)(victionConfig.VRC25GasPrice)
+	blockNum := st.evm.Context.BlockNumber
+
+	if !st.evm.ChainConfig().IsAtlas(blockNum) {
+		var effectiveGasPrice *big.Int
+		if st.evm.ChainConfig().TIPTRC21FeeBlock != nil && blockNum.Cmp(st.evm.ChainConfig().TIPTRC21FeeBlock) > 0 {
+			effectiveGasPrice = (*big.Int)(victionConfig.VRC25GasPrice) // 250,000,000
+		} else {
+			effectiveGasPrice = (*big.Int)(victionConfig.TRC21GasPrice) // 2,500
+		}
+
+		mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), effectiveGasPrice)
+		if feeCap.Cmp(mgval) < 0 {
+			return nil
+		}
+		// Set payer = VRC25Contract so isVRC25Transaction() returns true.
+		// buyGas will skip the balance check and SubBalance for pre-Atlas sponsored txs.
+		st.gasPrice = effectiveGasPrice
+		st.payer = victionConfig.VRC25Contract
+		return nil
+	}
+
+	vrc25GasPrice := (*big.Int)(victionConfig.VRC25GasPrice)
+	vrc25GasFee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), vrc25GasPrice)
+	if feeCap.Cmp(vrc25GasFee) <= 0 {
+		return nil
+	}
+
+	st.gasPrice = vrc25GasPrice
 	st.payer = victionConfig.VRC25Contract
-
 	return nil
 }
 
@@ -49,22 +59,28 @@ func (st *StateTransition) isVRC25Transaction() bool {
 	return st.payer != st.msg.From()
 }
 
-// vrc25RefundGas is called for VRC25-sponsored transactions and all Atlas-block transactions.
-// For sponsored transactions it also restores the unused portion to the fee capacity storage slot.
-// For non-sponsored Atlas transactions it only returns native ETH to the sender.
+// vrc25RefundGas handles gas refund for sponsored transactions.
 func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
 	if st.isVRC25Transaction() {
+		blockNum := st.evm.Context.BlockNumber
+		if !st.evm.ChainConfig().IsAtlas(blockNum) {
+			// Pre-Atlas: nothing
+			return
+		}
+
+		// Post-Atlas: deduct exactly gasUsed×price from the token's storage slot once.
 		addr := st.msg.To()
-		vrc25Contract := st.evm.ChainConfig().Viction.VRC25Contract
+		victionConfig := st.evm.ChainConfig().Viction
+		vrc25Contract := victionConfig.VRC25Contract
 		feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
-		if feeCap != nil { // always non-nil for non-nil addr; guard defensively
-			newFeeCap := new(big.Int).Add(feeCap, remaining)
-			feeCapKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), addr.Hash().Bytes())
-			st.state.SetState(vrc25Contract, feeCapKey.Hash(), common.BigToHash(newFeeCap))
+		if feeCap != nil {
+			gasUsedFee := new(big.Int).Mul(
+				new(big.Int).SetUint64(st.gasUsed()),
+				(*big.Int)(victionConfig.VRC25GasPrice),
+			)
+			vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Sub(feeCap, gasUsedFee))
 		}
 	}
-
-	// Return native ETH to the payer (VRC25Contract for sponsored txs, sender otherwise).
 	st.state.AddBalance(st.payer, remaining)
 }
 
@@ -99,7 +115,8 @@ func (st *StateTransition) applyTransactionFee() {
 	}
 
 	// Before TIPTRC21Fee fork: fee goes to the block coinbase.
-	if !st.evm.ChainConfig().IsTIPTRC21Fee(blockNum) {
+	chainCfg := st.evm.ChainConfig()
+	if chainCfg.TIPTRC21FeeBlock == nil || blockNum.Cmp(chainCfg.TIPTRC21FeeBlock) <= 0 {
 		st.state.AddBalance(st.evm.Context.Coinbase, txFee)
 		return
 	}
