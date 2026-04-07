@@ -1,5 +1,4 @@
 // Copyright 2026 The Vic-geth Authors
-// lending_engine.go defines the LendingEngine interface for the legacy TomoZ lending protocol.
 package core
 
 import (
@@ -13,13 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/legacy/tomoxlending/lendingstate"
 )
 
-// LendingEngine is the interface that the legacy TomoZ lending engine must satisfy.
-// Defined here to avoid import cycles (core → legacy/tomoxlending → ... → core).
-// The concrete implementation is legacy/tomoxlending.Lending.
-//
-// Note on GetLendingStateRoot naming: the interface method GetLendingStateRoot(block, author)
-// is distinct from the package-level helper GetLendingStateRoot(block, addr, author) in
-// state_processor_viction.go. They have different signatures and serve different purposes.
+// LendingEngine is the interface the TomoZ lending engine must satisfy.
+// Defined here to avoid an import cycle between core and legacy/tomoxlending.
 type LendingEngine interface {
 	GetLendingStateRoot(block *types.Block, author common.Address) (common.Hash, error)
 	GetLendingState(block *types.Block, author common.Address) (*lendingstate.LendingStateDB, error)
