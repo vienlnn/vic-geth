@@ -1,5 +1,4 @@
 // Copyright 2026 The Vic-geth Authors
-// This file provides vic-extensions to the geth BlockChain.
 package core
 
 import (
@@ -14,8 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/sortlgc"
 )
 
-// SetTradingEngine injects the legacy TomoX trading engine into the block processor.
-// This enables historical block replay for pre-Atlas TomoX transactions.
+// SetTradingEngine injects the TomoX trading engine into the block processor.
 func (bc *BlockChain) SetTradingEngine(engine TradingEngine) {
 	sp, ok := bc.processor.(*StateProcessor)
 	if !ok {
@@ -26,7 +24,7 @@ func (bc *BlockChain) SetTradingEngine(engine TradingEngine) {
 	log.Info("TomoX trading engine installed on state processor")
 }
 
-// SetLendingEngine injects the legacy TomoZ lending engine into the block processor.
+// SetLendingEngine injects the TomoZ lending engine into the block processor.
 func (bc *BlockChain) SetLendingEngine(engine LendingEngine) {
 	sp, ok := bc.processor.(*StateProcessor)
 	if !ok {
@@ -37,10 +35,8 @@ func (bc *BlockChain) SetLendingEngine(engine LendingEngine) {
 	log.Info("TomoZ lending engine installed on state processor")
 }
 
-// beforeProcessViction runs Viction-specific pre-processing before bc.processor.Process().
-// Currently handles TomoZ epoch-gated liquidation.
-// ORDERING: Must be called BEFORE bc.processor.Process() - liquidation mutations to statedb
-// must be visible to block transaction execution.
+// beforeProcessViction runs TomoZ liquidation data at epoch boundaries before
+// the main transaction loop. Only active for pre-Atlas lending-enabled blocks.
 func (bc *BlockChain) beforeProcessViction(block *types.Block, statedb *state.StateDB) error {
 	if bc.chainConfig.Posv == nil {
 		return nil
@@ -90,8 +86,8 @@ func (bc *BlockChain) UpdateM1() error {
 	}
 	log.Info("It's time to update new set of masternodes for the next epoch...")
 
-	contracrAddress := bc.chainConfig.Viction.ValidatorContract
-	if contracrAddress == (common.Address{}) {
+	contractAddress := bc.chainConfig.Viction.ValidatorContract
+	if contractAddress == (common.Address{}) {
 		return fmt.Errorf("validator contract address is not set in chain config")
 	}
 
@@ -103,11 +99,11 @@ func (bc *BlockChain) UpdateM1() error {
 	if err != nil {
 		return fmt.Errorf("failed to get state at current root (block %v): %v", bc.CurrentHeader().Number, err)
 	}
-	candidates = stateDB.VicGetCandidates(contracrAddress)
+	candidates = stateDB.VicGetCandidates(contractAddress)
 
 	var ms []posv.Masternode
 	for _, candidate := range candidates {
-		_, cap := stateDB.VicGetValidatorInfo(contracrAddress, candidate)
+		_, cap := stateDB.VicGetValidatorInfo(contractAddress, candidate)
 
 		//TODO: smart contract shouldn't return "0x0000000000000000000000000000000000000000"
 		if candidate.String() != "0x0000000000000000000000000000000000000000" {
