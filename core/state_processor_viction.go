@@ -257,10 +257,7 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 	// Inner matching only runs once TIPTomoXLending is also active.
 	if tx.IsLendingTransaction(vicConfig.LendingContract) && p.config.IsTomoXEnabled(header.Number) {
 		if _, err := lendingstate.DecodeTxLendingBatch(tx.Data()); err == nil {
-			if p.config.IsTomoXLendingEnabled(header.Number) {
-				return p.applyLendingTx(statedb, tx, header, usedGas)
-			}
-			return p.applyEmptyTransaction(statedb, tx, header, usedGas)
+			return p.applyLendingTx(statedb, tx, header, usedGas)
 		}
 		// Decode failed — let the normal EVM path handle it.
 	}
