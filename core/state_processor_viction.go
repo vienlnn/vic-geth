@@ -126,10 +126,9 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 		}
 	}
 
-	// Open the TomoZ lending trie; requires tradingStateDB to be ready.
+	// Open the TomoZ lending trie from the parent block.
 	if p.lendingEngine != nil && p.config.Posv != nil &&
-		p.config.IsTomoXLendingEnabled(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch &&
-		p.victionState.tradingStateDB != nil {
+		p.config.IsTomoXEnabled(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch {
 
 		parent := p.bc.GetBlock(header.ParentHash, header.Number.Uint64()-1)
 		if parent != nil {

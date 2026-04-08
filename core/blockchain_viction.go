@@ -215,7 +215,7 @@ func (bc *BlockChain) beforeProcessViction(block *types.Block, statedb *state.St
 	if !ok || sp.lendingEngine == nil || sp.tradingEngine == nil {
 		return nil
 	}
-	if !bc.chainConfig.IsTomoXLendingEnabled(block.Number()) {
+	if !bc.chainConfig.IsTomoXEnabled(block.Number()) {
 		return nil
 	}
 	if block.NumberU64()%bc.chainConfig.Posv.Epoch != uint64(bc.chainConfig.Viction.LendingLiquidateTradeBlock) {
