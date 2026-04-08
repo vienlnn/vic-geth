@@ -433,7 +433,14 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 			// Should not happen — caller pre-screened. Log and fall through to empty receipt.
 			log.Warn("TomoX: unexpected decode failure in applyTomoXTx", "tx", tx.Hash(), "err", err)
 		} else {
-			coinbase := header.Coinbase
+			// Use the block author (recovered from header signature) as coinbase, not
+			// header.Coinbase which is zeroed in PoSV blocks. This matches victionchain's
+			// blockchain.go which passes author = engine.Author(block.Header()) to
+			// ValidateTradingOrder → DoSettleBalance.
+			coinbase, err := p.engine.Author(header)
+			if err != nil {
+				log.Warn("TomoX: failed to recover block author, using zero address", "err", err)
+			}
 			tradingEngine := p.tradingEngine
 			tradingStateDB := p.victionState.tradingStateDB
 
@@ -501,7 +508,14 @@ func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transa
 			// Should not happen — caller pre-screened. Log and fall through to empty receipt.
 			log.Warn("TomoZ: unexpected decode failure in applyLendingTx", "tx", tx.Hash(), "err", err)
 		} else {
-			coinbase := header.Coinbase
+			// Use the block author (recovered from header signature) as coinbase, not
+			// header.Coinbase which is zeroed in PoSV blocks. Matches victionchain's
+			// blockchain.go which passes author = engine.Author(block.Header()) to
+			// ValidateLendingOrder → DoSettleBalance.
+			coinbase, err := p.engine.Author(header)
+			if err != nil {
+				log.Warn("TomoZ: failed to recover block author, using zero address", "err", err)
+			}
 			lendingStateDB := p.victionState.lendingStateDB
 			tradingStateDB := p.victionState.tradingStateDB
 
