@@ -240,9 +240,12 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 		return p.applySignTransaction(statedb, tx, header, usedGas)
 	}
 
-	// 0x91 — TomoX order-matching batch (active only in TIPTomoX..Atlas window)
+	// 0x91 — TomoX order-matching batch (active only in TIPTomoX..Atlas window).
 	if tx.IsTradingTransaction(vicConfig.TomoXContract) && p.config.IsTomoXEnabled(header.Number) {
-		return p.applyTomoXTx(statedb, tx, header, usedGas)
+		if _, err := tradingstate.DecodeTxMatchesBatch(tx.Data()); err == nil {
+			return p.applyTomoXTx(statedb, tx, header, usedGas)
+		}
+		// Decode failed — let the normal EVM path handle it.
 	}
 
 	// 0x92 — trading state root commit; verified in afterProcess
@@ -254,10 +257,13 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 	// Outer gate matches victionchain: IsTomoXEnabled (TIPTomoX..Atlas).
 	// Inner matching only runs once TIPTomoXLending is also active.
 	if tx.IsLendingTransaction(vicConfig.LendingContract) && p.config.IsTomoXEnabled(header.Number) {
-		if p.config.IsTomoXLendingEnabled(header.Number) {
-			return p.applyLendingTx(statedb, tx, header, usedGas)
+		if _, err := lendingstate.DecodeTxLendingBatch(tx.Data()); err == nil {
+			if p.config.IsTomoXLendingEnabled(header.Number) {
+				return p.applyLendingTx(statedb, tx, header, usedGas)
+			}
+			return p.applyEmptyTransaction(statedb, tx, header, usedGas)
 		}
-		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
+		// Decode failed — let the normal EVM path handle it.
 	}
 
 	// 0x94 — lending finalized trade.
@@ -406,6 +412,9 @@ func (p *StateProcessor) SetLendingEngine(engine LendingEngine) {
 
 // applyTomoXTx decodes and replays a TomoX order-matching batch (0x91 transaction).
 //
+// Called only when the tx payload successfully decoded as a TxMatchBatch (guaranteed
+// by the caller in applyVictionTransaction).
+//
 // On epoch-boundary blocks (block % Epoch == 0) skips order execution
 // entirely and only runs UpdateMediumPriceBeforeEpoch (called in beforeProcess).
 func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transaction, header *types.Header, usedGas *uint64) (bool, *types.Receipt, uint64, error, *big.Int) {
@@ -421,11 +430,8 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	if !isEpochBlock && len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		txMatchBatch, err := tradingstate.DecodeTxMatchesBatch(tx.Data())
 		if err != nil {
-			// victionchain's ExtractTradingTransactions silently skips 0x91 txs whose data
-			// cannot be decoded as a JSON TxMatchBatch (e.g. ABI-encoded "TomoXSign" calls).
-			// Those txs still receive an empty receipt via ApplyEmptyTransaction — which is
-			// exactly what we do here: log and fall through to the receipt below.
-			log.Warn("TomoX: skipping non-batch 0x91 tx", "tx", tx.Hash(), "err", err)
+			// Should not happen — caller pre-screened. Log and fall through to empty receipt.
+			log.Warn("TomoX: unexpected decode failure in applyTomoXTx", "tx", tx.Hash(), "err", err)
 		} else {
 			coinbase := header.Coinbase
 			tradingEngine := p.tradingEngine
@@ -460,12 +466,16 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	txLog.Address = *tx.To()
 	txLog.BlockNumber = header.Number.Uint64()
 	statedb.AddLog(txLog)
+	receipt.Logs = statedb.GetLogs(tx.Hash())
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 
 	return true, receipt, 0, nil, nil
 }
 
 // applyLendingTx decodes and replays a TomoZ lending order-matching batch (0x93 transaction).
+//
+// Called only when the tx payload successfully decoded as a TxLendingBatch (guaranteed
+// by the caller in applyVictionTransaction).
 //
 // Mirrors the epoch-skip rule from applyTomoXTx: on epoch-boundary blocks
 // skips all order execution; only UpdateMediumPriceBeforeEpoch runs that block.
@@ -488,9 +498,8 @@ func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transa
 
 		txMatchBatch, err := lendingstate.DecodeTxLendingBatch(tx.Data())
 		if err != nil {
-			// victionchain's ExtractLendingTransactions silently skips non-JSON 0x93 txs.
-			// Fall through to produce an empty receipt, matching ApplyEmptyTransaction.
-			log.Warn("TomoZ: skipping non-batch 0x93 tx", "tx", tx.Hash(), "err", err)
+			// Should not happen — caller pre-screened. Log and fall through to empty receipt.
+			log.Warn("TomoZ: unexpected decode failure in applyLendingTx", "tx", tx.Hash(), "err", err)
 		} else {
 			coinbase := header.Coinbase
 			lendingStateDB := p.victionState.lendingStateDB
@@ -522,6 +531,7 @@ func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transa
 	txLog.Address = *tx.To()
 	txLog.BlockNumber = header.Number.Uint64()
 	statedb.AddLog(txLog)
+	receipt.Logs = statedb.GetLogs(tx.Hash())
 	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 	return true, receipt, 0, nil, nil
 }
