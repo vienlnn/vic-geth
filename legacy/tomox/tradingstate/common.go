@@ -35,7 +35,7 @@ var (
 	RelayerFee             = big.NewInt(100)   // default relayer fee
 	RelayerCancelFee       = big.NewInt(100)   // default relayer cancel fee
 	TomoXBaseCancelFee     = big.NewInt(10000) // base cancel fee
-	RelayerRegistrationSMC = "0x0000000000000000000000000000000000000099"
+	RelayerRegistrationSMC = "0x16c63b79f9C8784168103C0b74E6A59EC2de4a02"
 	ValidatorContract      = "0x0000000000000000000000000000000000000088"
 )
 

@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -48,9 +47,6 @@ type TradingEngine interface {
 	// GetStateCache returns the trie-node cache backed by the tomox LevelDB.
 	// Used to flush trie nodes to disk after each block.
 	GetStateCache() tradingstate.Database
-
-	// GetTriegc returns the garbage-collection priority queue for the trading trie.
-	GetTriegc() *prque.Prque
 }
 
 // victionProcessorState holds per-block Viction state that is reset each block.
@@ -62,6 +58,13 @@ type victionProcessorState struct {
 
 	// lendingStateDB is the TomoZ lending order-book trie. Non-nil only for pre-Atlas blocks.
 	lendingStateDB *lendingstate.LendingStateDB
+
+	// committedTradingRoot is the root returned by tradingStateDB.Commit() in afterProcess.
+	// It is already staged into the trie.Database dirty set and ready to flush to LevelDB.
+	committedTradingRoot common.Hash
+
+	// committedLendingRoot is the root returned by lendingStateDB.Commit() in afterProcess.
+	committedLendingRoot common.Hash
 
 	// Pre-Atlas VRC25 fee tracking: running balances per token, updated each tx,
 	// flushed to state in afterProcess.
@@ -99,9 +102,9 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 		p.victionState.feeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
 	}
 
-	// Pre-Atlas: open the TomoX trading trie from the parent block.
-	if !p.config.IsAtlas(header.Number) && p.tradingEngine != nil && p.config.Posv != nil &&
-		p.config.IsTIPTomoX(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch {
+	// Open the TomoX trading trie from the parent block.
+	if p.tradingEngine != nil && p.config.Posv != nil &&
+		p.config.IsTomoXEnabled(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch {
 
 		parent := p.bc.GetBlock(header.ParentHash, header.Number.Uint64()-1)
 		if parent != nil {
@@ -123,9 +126,9 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 		}
 	}
 
-	// Pre-Atlas: open the TomoZ lending trie; requires tradingStateDB to be ready.
-	if !p.config.IsAtlas(header.Number) && p.lendingEngine != nil && p.config.Posv != nil &&
-		p.config.IsTIPTomoXLending(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch &&
+	// Open the TomoZ lending trie; requires tradingStateDB to be ready.
+	if p.lendingEngine != nil && p.config.Posv != nil &&
+		p.config.IsTomoXLendingEnabled(header.Number) && header.Number.Uint64() > p.config.Posv.Epoch &&
 		p.victionState.tradingStateDB != nil {
 
 		parent := p.bc.GetBlock(header.ParentHash, header.Number.Uint64()-1)
@@ -152,34 +155,51 @@ func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB
 		vrc25.UpdateFeeCapacity(statedb, p.config.Viction.VRC25Contract, p.victionState.feeUpdated, p.victionState.totalFee)
 	}
 
-	// Verify the TomoX trading state root committed in the 0x92 tx.
+	// Commit and verify the TomoX trading state root.
+	//
+	// IMPORTANT: tradingStateDB.Commit() must be called BEFORE IntermediateRoot().
+	// IntermediateRoot calls trie.Hash() which collapses in-memory dirty nodes into
+	// hash nodes.  A subsequent trie.Commit() on a fully-hashed trie finds no dirty
+	// nodes and writes nothing to trie.Database.dirties.  If Commit() runs first, it
+	// flushes dirty nodes into trie.Database.dirties; trie.Database.Commit() can then
+	// persist them to LevelDB.
 	if p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
-		gotRoot := p.victionState.tradingStateDB.IntermediateRoot()
+		tradingRoot, err := p.victionState.tradingStateDB.Commit()
+		if err != nil {
+			return fmt.Errorf("TomoX: TradingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
+		}
+		p.victionState.committedTradingRoot = tradingRoot
+
 		blockAuthor, err := p.engine.Author(block.Header())
 		if err != nil {
 			return fmt.Errorf("TomoX: failed to resolve block author at block %d: %w", block.NumberU64(), err)
 		}
 		expectRoot := GetTradingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor, p.config)
-		if gotRoot != expectRoot {
+		if tradingRoot != expectRoot {
 			return fmt.Errorf("TomoX: trading state root mismatch at block %d: got %s, expected %s",
-				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
+				block.NumberU64(), tradingRoot.Hex(), expectRoot.Hex())
 		}
-		log.Debug("TomoX: trading state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
+		log.Debug("TomoX: trading state root verified", "block", block.NumberU64(), "root", tradingRoot.Hex())
 	}
 
-	// Verify the TomoZ lending state root committed in the same 0x92 tx.
+	// Commit and verify the TomoZ lending state root (same logic as above).
 	if p.victionState != nil && p.victionState.lendingStateDB != nil && p.victionState.tradingStateDB != nil {
-		gotRoot := p.victionState.lendingStateDB.IntermediateRoot()
+		lendingRoot, err := p.victionState.lendingStateDB.Commit()
+		if err != nil {
+			return fmt.Errorf("TomoZ: LendingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
+		}
+		p.victionState.committedLendingRoot = lendingRoot
+
 		blockAuthor, err := p.engine.Author(block.Header())
 		if err != nil {
 			return fmt.Errorf("TomoZ: failed to resolve block author at block %d: %w", block.NumberU64(), err)
 		}
 		expectRoot := GetLendingStateRoot(block, p.config.Viction.TradingStateContract, blockAuthor, p.config)
-		if gotRoot != expectRoot {
+		if lendingRoot != expectRoot {
 			return fmt.Errorf("TomoZ: lending state root mismatch at block %d: got %s, expected %s",
-				block.NumberU64(), gotRoot.Hex(), expectRoot.Hex())
+				block.NumberU64(), lendingRoot.Hex(), expectRoot.Hex())
 		}
-		log.Debug("TomoZ: lending state root verified", "block", block.NumberU64(), "root", gotRoot.Hex())
+		log.Debug("TomoZ: lending state root verified", "block", block.NumberU64(), "root", lendingRoot.Hex())
 	}
 
 	return nil
@@ -221,27 +241,30 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 		return p.applySignTransaction(statedb, tx, header, usedGas)
 	}
 
-	// TomoX and TomoZ system contracts are disabled at Atlas.
-	if !p.config.IsAtlas(header.Number) {
-		// 0x91 — TomoX order-matching batch
-		if to == vicConfig.TomoXContract && p.config.IsTIPTomoX(header.Number) {
-			return p.applyTomoXTx(statedb, tx, header, usedGas)
-		}
+	// 0x91 — TomoX order-matching batch (active only in TIPTomoX..Atlas window)
+	if to == vicConfig.TomoXContract && p.config.IsTomoXEnabled(header.Number) {
+		return p.applyTomoXTx(statedb, tx, header, usedGas)
+	}
 
-		// 0x92 — trading state root commit; verified in afterProcess
-		if to == vicConfig.TradingStateContract && p.config.IsTIPTomoX(header.Number) {
-			return p.applyEmptyTransaction(statedb, tx, header, usedGas)
-		}
+	// 0x92 — trading state root commit; verified in afterProcess
+	if to == vicConfig.TradingStateContract && p.config.IsTomoXEnabled(header.Number) {
+		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
+	}
 
-		// 0x93 — TomoZ lending order-matching batch
-		if to == vicConfig.LendingContract && p.config.IsTIPTomoXLending(header.Number) {
+	// 0x93 — TomoZ lending order-matching batch.
+	// Outer gate matches victionchain: IsTomoXEnabled (TIPTomoX..Atlas).
+	// Inner matching only runs once TIPTomoXLending is also active.
+	if to == vicConfig.LendingContract && p.config.IsTomoXEnabled(header.Number) {
+		if p.config.IsTomoXLendingEnabled(header.Number) {
 			return p.applyLendingTx(statedb, tx, header, usedGas)
 		}
+		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
+	}
 
-		// 0x94 — lending finalized trade
-		if to == vicConfig.LendingFinalizedContract && p.config.IsTIPTomoXLending(header.Number) {
-			return p.applyEmptyTransaction(statedb, tx, header, usedGas)
-		}
+	// 0x94 — lending finalized trade.
+	// Same outer gate as victionchain: IsTomoXEnabled.
+	if to == vicConfig.LendingFinalizedContract && p.config.IsTomoXEnabled(header.Number) {
+		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
 	}
 
 	return false, nil, 0, nil, nil

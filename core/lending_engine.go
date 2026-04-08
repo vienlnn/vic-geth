@@ -5,7 +5,6 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/legacy/tomox/tradingstate"
@@ -19,7 +18,6 @@ type LendingEngine interface {
 	GetLendingState(block *types.Block, author common.Address) (*lendingstate.LendingStateDB, error)
 	HasLendingState(block *types.Block, author common.Address) bool
 	GetStateCache() lendingstate.Database
-	GetTriegc() *prque.Prque
 	CommitOrder(
 		header *types.Header,
 		coinbase common.Address,

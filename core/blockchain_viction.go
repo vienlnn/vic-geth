@@ -13,64 +13,211 @@ import (
 	"github.com/ethereum/go-ethereum/sortlgc"
 )
 
-// commitVictionState commits the TomoX trading trie and (if present) the TomoZ
-// lending trie to their respective LevelDB backing stores.  It must be called
-// after writeBlockWithState has already committed the main EVM state for block.
+// commitVictionState manages persistence of TomoX and TomoZ trie nodes using the
+// same deferred GC strategy as the main EVM state trie (Reference + priority
+// queue; Commit to LevelDB every TriesInMemory blocks; Dereference old roots).
 //
-// Without this call the trie nodes for the trading/lending tries live only in
-// an in-memory trie.Database; the next block's beforeProcess would open a trie
-// whose nodes do not exist on disk and would read an empty state, causing a
-// trading-state-root mismatch.
+// afterProcess calls TradingStateDB.Commit() / LendingStateDB.Commit() which
+// stage dirty trie nodes into the respective trie.Database dirty sets.
+//
+// Here we:
+//  1. Reference the new root to keep it in memory.
+//  2. Push it onto the deferred GC queue (tradingTriegc / lendingTriegc).
+//  3. Every TriesInMemory blocks: commit the root that is TriesInMemory behind
+//     HEAD to LevelDB, then Dereference older roots that are no longer needed.
+//
+// This matches victionchain's WriteBlockWithState deferred commit strategy and
+// avoids a LevelDB write on every single block (which would cause excessive
+// write amplification).
 func (bc *BlockChain) commitVictionState(block *types.Block) error {
+	if !bc.chainConfig.IsTomoXEnabled(block.Number()) {
+		return nil
+	}
+	if bc.cacheConfig.TrieDirtyDisabled {
+		return bc.commitVictionStateDirect(block)
+	}
+	return bc.commitVictionStateDeferred(block)
+}
+
+// commitVictionStateDirect is used in archive mode (TrieDirtyDisabled): flush
+// every block immediately to LevelDB, no deferred GC needed.
+func (bc *BlockChain) commitVictionStateDirect(block *types.Block) error {
 	sp, ok := bc.processor.(*StateProcessor)
 	if !ok || sp.victionState == nil {
 		return nil
 	}
-
-	tradingStateDB := sp.victionState.tradingStateDB
-	lendingStateDB := sp.victionState.lendingStateDB
-
-	// Commit trading trie --------------------------------------------------
-	if tradingStateDB != nil && sp.tradingEngine != nil {
-		tradingRoot, err := tradingStateDB.Commit()
-		if err != nil {
-			return fmt.Errorf("TomoX: TradingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
-		}
-		tradingTrieDB := sp.tradingEngine.GetStateCache().TrieDB()
-
-		if bc.cacheConfig.TrieDirtyDisabled {
-			// Archive node: flush immediately.
-			if err := tradingTrieDB.Commit(tradingRoot, false, nil); err != nil {
-				return fmt.Errorf("TomoX: trading trieDB.Commit (archive) failed at block %d: %w", block.NumberU64(), err)
+	if sp.victionState.tradingStateDB != nil && sp.tradingEngine != nil {
+		tradingRoot := sp.victionState.committedTradingRoot
+		if tradingRoot != (common.Hash{}) {
+			if err := sp.tradingEngine.GetStateCache().TrieDB().Commit(tradingRoot, false, nil); err != nil {
+				return fmt.Errorf("TomoX: trading trieDB.Commit(archive) failed at block %d: %w", block.NumberU64(), err)
 			}
-		} else {
-			// Full node: keep reference for deferred GC.
-			tradingTrieDB.Reference(tradingRoot, common.Hash{})
-			sp.tradingEngine.GetTriegc().Push(tradingRoot, -int64(block.NumberU64()))
+			log.Trace("TomoX: trading trie flushed to disk (archive)", "block", block.NumberU64(), "root", tradingRoot.Hex())
 		}
-		log.Trace("TomoX: trading trie committed", "block", block.NumberU64(), "root", tradingRoot.Hex())
+	}
+	if sp.victionState.lendingStateDB != nil && sp.lendingEngine != nil {
+		lendingRoot := sp.victionState.committedLendingRoot
+		if lendingRoot != (common.Hash{}) {
+			if err := sp.lendingEngine.GetStateCache().TrieDB().Commit(lendingRoot, false, nil); err != nil {
+				return fmt.Errorf("TomoZ: lending trieDB.Commit(archive) failed at block %d: %w", block.NumberU64(), err)
+			}
+			log.Trace("TomoZ: lending trie flushed to disk (archive)", "block", block.NumberU64(), "root", lendingRoot.Hex())
+		}
+	}
+	return nil
+}
+
+// commitVictionStateDeferred is the full-node path: deferred GC mirroring the
+// main EVM trie strategy in victionchain's WriteBlockWithState.
+//
+// Per block:
+//   - Reference(root) keeps the root alive in the trie.Database dirty cache.
+//   - Push onto sp.tradingTriegc / sp.lendingTriegc for later GC.
+//
+// On flush (same dual gate as victionchain: gcproc > TrieTimeLimit OR
+// chosen > lastWrite+TriesInMemory):
+//   - Look up the trading/lending root of the block TriesInMemory behind HEAD
+//     from the block's 0x92/0x94 system tx (same as victionchain).
+//   - Commit that root to LevelDB.
+//   - Dereference all roots older than `chosen` from the GC queue.
+func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
+	sp, ok := bc.processor.(*StateProcessor)
+	if !ok || sp.victionState == nil {
+		return nil
+	}
+	current := block.NumberU64()
+
+	// --- Trading trie ---
+	if sp.victionState.tradingStateDB != nil && sp.tradingEngine != nil {
+		tradingRoot := sp.victionState.committedTradingRoot
+		if tradingRoot != (common.Hash{}) {
+			tradingTrieDB := sp.tradingEngine.GetStateCache().TrieDB()
+			tradingTrieDB.Reference(tradingRoot, common.Hash{})
+			sp.tradingTriegc.Push(tradingRoot, -int64(current))
+
+			if current > TriesInMemory {
+				chosen := current - TriesInMemory
+
+				// Flush to LevelDB when time gate or block-gap gate triggers —
+				// matching victionchain's condition exactly.
+				if bc.gcproc > bc.cacheConfig.TrieTimeLimit || chosen > sp.lastTradingWrite+TriesInMemory {
+					header := bc.GetHeaderByNumber(chosen)
+					if header == nil {
+						log.Warn("TomoX: reorg in progress, trading trie commit postponed", "number", chosen)
+					} else {
+						chosenBlock := bc.GetBlock(header.Hash(), chosen)
+						if chosenBlock != nil {
+							author, _ := bc.Engine().Author(chosenBlock.Header())
+							oldTradingRoot, err := sp.tradingEngine.GetTradingStateRoot(chosenBlock, author)
+							if err == nil && oldTradingRoot != (common.Hash{}) {
+								if err := tradingTrieDB.Commit(oldTradingRoot, true, nil); err != nil {
+									log.Error("TomoX: trading trieDB.Commit(deferred) failed",
+										"block", chosen, "err", err)
+								} else {
+									log.Trace("TomoX: trading trie flushed to disk",
+										"block", chosen, "root", oldTradingRoot.Hex())
+									sp.lastTradingWrite = chosen
+								}
+							}
+						}
+					}
+				}
+				// Dereference roots that are old enough to no longer need keeping.
+				for !sp.tradingTriegc.Empty() {
+					root, number := sp.tradingTriegc.Pop()
+					if uint64(-number) > chosen {
+						sp.tradingTriegc.Push(root, number)
+						break
+					}
+					tradingTrieDB.Dereference(root.(common.Hash))
+				}
+			}
+		}
 	}
 
-	// Commit lending trie --------------------------------------------------
-	if lendingStateDB != nil && sp.lendingEngine != nil {
-		lendingRoot, err := lendingStateDB.Commit()
-		if err != nil {
-			return fmt.Errorf("TomoZ: LendingStateDB.Commit failed at block %d: %w", block.NumberU64(), err)
-		}
-		lendingTrieDB := sp.lendingEngine.GetStateCache().TrieDB()
-
-		if bc.cacheConfig.TrieDirtyDisabled {
-			if err := lendingTrieDB.Commit(lendingRoot, false, nil); err != nil {
-				return fmt.Errorf("TomoZ: lending trieDB.Commit (archive) failed at block %d: %w", block.NumberU64(), err)
-			}
-		} else {
+	// --- Lending trie ---
+	if sp.victionState.lendingStateDB != nil && sp.lendingEngine != nil {
+		lendingRoot := sp.victionState.committedLendingRoot
+		if lendingRoot != (common.Hash{}) {
+			lendingTrieDB := sp.lendingEngine.GetStateCache().TrieDB()
 			lendingTrieDB.Reference(lendingRoot, common.Hash{})
-			sp.lendingEngine.GetTriegc().Push(lendingRoot, -int64(block.NumberU64()))
+			sp.lendingTriegc.Push(lendingRoot, -int64(current))
+
+			if current > TriesInMemory {
+				chosen := current - TriesInMemory
+
+				if bc.gcproc > bc.cacheConfig.TrieTimeLimit || chosen > sp.lastLendingWrite+TriesInMemory {
+					header := bc.GetHeaderByNumber(chosen)
+					if header == nil {
+						log.Warn("TomoZ: reorg in progress, lending trie commit postponed", "number", chosen)
+					} else {
+						chosenBlock := bc.GetBlock(header.Hash(), chosen)
+						if chosenBlock != nil {
+							author, _ := bc.Engine().Author(chosenBlock.Header())
+							oldLendingRoot, err := sp.lendingEngine.GetLendingStateRoot(chosenBlock, author)
+							if err == nil && oldLendingRoot != (common.Hash{}) {
+								if err := lendingTrieDB.Commit(oldLendingRoot, true, nil); err != nil {
+									log.Error("TomoZ: lending trieDB.Commit(deferred) failed",
+										"block", chosen, "err", err)
+								} else {
+									log.Trace("TomoZ: lending trie flushed to disk",
+										"block", chosen, "root", oldLendingRoot.Hex())
+									sp.lastLendingWrite = chosen
+								}
+							}
+						}
+					}
+				}
+				for !sp.lendingTriegc.Empty() {
+					root, number := sp.lendingTriegc.Pop()
+					if uint64(-number) > chosen {
+						sp.lendingTriegc.Push(root, number)
+						break
+					}
+					lendingTrieDB.Dereference(root.(common.Hash))
+				}
+			}
 		}
-		log.Trace("TomoZ: lending trie committed", "block", block.NumberU64(), "root", lendingRoot.Hex())
 	}
 
 	return nil
+}
+
+// stopViction flushes any in-memory trading/lending trie roots that were not yet
+// committed to LevelDB (the tail of the deferred GC queues).  Called from
+// BlockChain.Stop() before the node exits.
+func (bc *BlockChain) stopViction() {
+	if bc.cacheConfig.TrieDirtyDisabled {
+		return // archive mode commits every block; nothing to flush here
+	}
+	sp, ok := bc.processor.(*StateProcessor)
+	if !ok || sp == nil {
+		return
+	}
+
+	// Flush all remaining trading trie roots to LevelDB.
+	if sp.tradingEngine != nil {
+		tradingTrieDB := sp.tradingEngine.GetStateCache().TrieDB()
+		for !sp.tradingTriegc.Empty() {
+			root := sp.tradingTriegc.PopItem().(common.Hash)
+			if err := tradingTrieDB.Commit(root, true, nil); err != nil {
+				log.Error("TomoX: trading trieDB.Commit(shutdown) failed", "root", root, "err", err)
+			}
+			tradingTrieDB.Dereference(root)
+		}
+	}
+
+	// Flush all remaining lending trie roots to LevelDB.
+	if sp.lendingEngine != nil {
+		lendingTrieDB := sp.lendingEngine.GetStateCache().TrieDB()
+		for !sp.lendingTriegc.Empty() {
+			root := sp.lendingTriegc.PopItem().(common.Hash)
+			if err := lendingTrieDB.Commit(root, true, nil); err != nil {
+				log.Error("TomoZ: lending trieDB.Commit(shutdown) failed", "root", root, "err", err)
+			}
+			lendingTrieDB.Dereference(root)
+		}
+	}
 }
 
 // SetTradingEngine injects the TomoX trading engine into the block processor.
@@ -105,7 +252,7 @@ func (bc *BlockChain) beforeProcessViction(block *types.Block, statedb *state.St
 	if !ok || sp.lendingEngine == nil || sp.tradingEngine == nil {
 		return nil
 	}
-	if !bc.chainConfig.IsTIPTomoXLending(block.Number()) || bc.chainConfig.IsAtlas(block.Number()) {
+	if !bc.chainConfig.IsTomoXLendingEnabled(block.Number()) {
 		return nil
 	}
 	if block.NumberU64()%bc.chainConfig.Posv.Epoch != uint64(bc.chainConfig.Viction.LendingLiquidateTradeBlock) {
