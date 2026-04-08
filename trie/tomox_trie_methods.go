@@ -4,20 +4,26 @@ import (
 	"errors"
 )
 
-// TryGetBestLeftKeyAndValue returns the left most node under the root hash
+// TryGetBestLeftKeyAndValue returns the leftmost leaf in the trie.
+// Returns (nil, nil, errors.New("not found")) when the trie is empty.
+// Propagates any underlying database error (e.g. MissingNodeError) so the
+// caller can distinguish a genuinely empty trie from a persistence failure.
 func (t *Trie) TryGetBestLeftKeyAndValue() ([]byte, []byte, error) {
 	it := t.NodeIterator(nil)
 	for it.Next(true) {
 		if it.Leaf() {
-			key := it.LeafKey()
-			return key, it.LeafBlob(), nil
+			return it.LeafKey(), it.LeafBlob(), nil
 		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, nil, err
 	}
 	return nil, nil, errors.New("not found")
 }
 
-// TryGetBestRightKeyAndValue returns the right most node under the root hash (largest key)
-// It is slower than left key search because it requires full traversal.
+// TryGetBestRightKeyAndValue returns the rightmost leaf in the trie (largest key).
+// Requires full traversal; slower than the left-key variant.
+// Propagates any underlying database error encountered during iteration.
 func (t *Trie) TryGetBestRightKeyAndValue() ([]byte, []byte, error) {
 	it := t.NodeIterator(nil)
 	var lastKey, lastVal []byte
@@ -27,13 +33,17 @@ func (t *Trie) TryGetBestRightKeyAndValue() ([]byte, []byte, error) {
 			lastVal = it.LeafBlob()
 		}
 	}
+	if err := it.Error(); err != nil {
+		return nil, nil, err
+	}
 	if lastKey == nil {
 		return nil, nil, errors.New("not found")
 	}
 	return lastKey, lastVal, nil
 }
 
-// TryGetAllLeftKeyAndValue gets all entries bounded by maxCount.
+// TryGetAllLeftKeyAndValue returns up to maxCount leftmost leaves.
+// Propagates any underlying database error encountered during iteration.
 func (t *Trie) TryGetAllLeftKeyAndValue(maxCount int) ([][]byte, [][]byte, error) {
 	it := t.NodeIterator(nil)
 	var keys [][]byte
@@ -48,6 +58,9 @@ func (t *Trie) TryGetAllLeftKeyAndValue(maxCount int) ([][]byte, [][]byte, error
 				break
 			}
 		}
+	}
+	if err := it.Error(); err != nil {
+		return nil, nil, err
 	}
 	if len(keys) == 0 {
 		return nil, nil, errors.New("not found")
