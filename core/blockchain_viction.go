@@ -67,24 +67,18 @@ func (bc *BlockChain) commitVictionStateDirect(block *types.Block) error {
 	return nil
 }
 
-// commitVictionStateDeferred is the full-node path: deferred GC mirroring the
-// main EVM trie strategy in victionchain's WriteBlockWithState.
+// commitVictionStateDeferred is the full-node path for trading/lending trie persistence.
 //
-// Per block:
-//   - Reference(root) keeps the root alive in the trie.Database dirty cache.
-//   - Push onto sp.tradingTriegc / sp.lendingTriegc for later GC.
+// Unlike the EVM trie, we commit the current block's root to LevelDB on every
+// block rather than deferring the commit TriesInMemory blocks. This is
+// necessary because GetTradingStateRoot (used in the victionchain deferred
+// path) returns EmptyRoot for any block that has no 0x92 system tx, causing
+// dirty nodes to accumulate in the trie.Database dirty cache until Dereference
+// removes them without ever being written — the "nodes=0" bug.
 //
-// On flush (every block that advances chosen past the last committed block):
-//   - Commit the trading/lending root of the block TriesInMemory behind HEAD.
-//   - Dereference all roots older than `chosen` from the GC queue.
-//
-// The commit gate fires on every advancing `chosen` (not gated behind a
-// separate TriesInMemory gap like the EVM path). This matches victionchain's
-// WriteBlockWithState, where trading commit is inside the same if-block as the
-// EVM commit — they always fire together. Using a separate gap gate in vic-geth
-// created a window where roots were Dereference'd from the dirty cache before
-// being committed to LevelDB, causing "failed find best price ask trie" errors
-// during sync (Bug 8).
+// We still push every root onto the GC queue and defer the Dereference by
+// TriesInMemory blocks, which is sufficient for reorg safety (same as EVM).
+// The extra write overhead per block is small compared to order matching.
 func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 	sp, ok := bc.processor.(*StateProcessor)
 	if !ok || sp.victionState == nil {
@@ -92,7 +86,7 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 	}
 	current := block.NumberU64()
 
-	// --- Trading trie ---
+	// Trading trie: commit the current block's dirty root immediately.
 	if sp.victionState.tradingStateDB != nil && sp.tradingEngine != nil {
 		tradingRoot := sp.victionState.committedTradingRoot
 		if tradingRoot != (common.Hash{}) {
@@ -100,35 +94,15 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 			tradingTrieDB.Reference(tradingRoot, common.Hash{})
 			sp.tradingTriegc.Push(tradingRoot, -int64(current))
 
+			if err := tradingTrieDB.Commit(tradingRoot, true, nil); err != nil {
+				log.Error("TomoX: trading trieDB.Commit failed", "block", current, "err", err)
+			} else {
+				log.Trace("TomoX: trading trie flushed to disk", "block", current, "root", tradingRoot)
+			}
+
+			// Dereference roots old enough to no longer need keeping in memory.
 			if current > TriesInMemory {
 				chosen := current - TriesInMemory
-
-				// Commit on every advancing block, not just every TriesInMemory gap.
-				// This guarantees the root at `chosen` is in LevelDB before the
-				// Dereference loop below removes it from the dirty cache.
-				if chosen > sp.lastTradingWrite {
-					header := bc.GetHeaderByNumber(chosen)
-					if header == nil {
-						log.Warn("TomoX: reorg in progress, trading trie commit postponed", "number", chosen)
-					} else {
-						chosenBlock := bc.GetBlock(header.Hash(), chosen)
-						if chosenBlock != nil {
-							author, _ := bc.Engine().Author(chosenBlock.Header())
-							oldTradingRoot, err := sp.tradingEngine.GetTradingStateRoot(chosenBlock, author)
-							if err == nil && oldTradingRoot != (common.Hash{}) {
-								if err := tradingTrieDB.Commit(oldTradingRoot, true, nil); err != nil {
-									log.Error("TomoX: trading trieDB.Commit(deferred) failed",
-										"block", chosen, "err", err)
-								} else {
-									log.Trace("TomoX: trading trie flushed to disk",
-										"block", chosen, "root", oldTradingRoot.Hex())
-									sp.lastTradingWrite = chosen
-								}
-							}
-						}
-					}
-				}
-				// Dereference roots that are old enough to no longer need keeping.
 				for !sp.tradingTriegc.Empty() {
 					root, number := sp.tradingTriegc.Pop()
 					if uint64(-number) > chosen {
@@ -141,7 +115,7 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 		}
 	}
 
-	// --- Lending trie ---
+	// Lending trie: same strategy as trading trie.
 	if sp.victionState.lendingStateDB != nil && sp.lendingEngine != nil {
 		lendingRoot := sp.victionState.committedLendingRoot
 		if lendingRoot != (common.Hash{}) {
@@ -149,32 +123,14 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 			lendingTrieDB.Reference(lendingRoot, common.Hash{})
 			sp.lendingTriegc.Push(lendingRoot, -int64(current))
 
+			if err := lendingTrieDB.Commit(lendingRoot, true, nil); err != nil {
+				log.Error("TomoZ: lending trieDB.Commit failed", "block", current, "err", err)
+			} else {
+				log.Trace("TomoZ: lending trie flushed to disk", "block", current, "root", lendingRoot)
+			}
+
 			if current > TriesInMemory {
 				chosen := current - TriesInMemory
-
-				// Same commit-on-every-advance strategy as trading trie.
-				if chosen > sp.lastLendingWrite {
-					header := bc.GetHeaderByNumber(chosen)
-					if header == nil {
-						log.Warn("TomoZ: reorg in progress, lending trie commit postponed", "number", chosen)
-					} else {
-						chosenBlock := bc.GetBlock(header.Hash(), chosen)
-						if chosenBlock != nil {
-							author, _ := bc.Engine().Author(chosenBlock.Header())
-							oldLendingRoot, err := sp.lendingEngine.GetLendingStateRoot(chosenBlock, author)
-							if err == nil && oldLendingRoot != (common.Hash{}) {
-								if err := lendingTrieDB.Commit(oldLendingRoot, true, nil); err != nil {
-									log.Error("TomoZ: lending trieDB.Commit(deferred) failed",
-										"block", chosen, "err", err)
-								} else {
-									log.Trace("TomoZ: lending trie flushed to disk",
-										"block", chosen, "root", oldLendingRoot.Hex())
-									sp.lastLendingWrite = chosen
-								}
-							}
-						}
-					}
-				}
 				for !sp.lendingTriegc.Empty() {
 					root, number := sp.lendingTriegc.Pop()
 					if uint64(-number) > chosen {

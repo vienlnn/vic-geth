@@ -49,10 +49,8 @@ type StateProcessor struct {
 
 	// Deferred trie GC fields for TomoX/TomoZ (full-node path).
 	// These are managed entirely by blockchain_viction.go / commitVictionState.
-	tradingTriegc    *prque.Prque // deferred GC queue for TomoX trading trie roots
-	lendingTriegc    *prque.Prque // deferred GC queue for TomoZ lending trie roots
-	lastTradingWrite uint64       // block number of last trading trie commit to LevelDB
-	lastLendingWrite uint64       // block number of last lending trie commit to LevelDB
+	tradingTriegc *prque.Prque // deferred GC queue for TomoX trading trie roots
+	lendingTriegc *prque.Prque // deferred GC queue for TomoZ lending trie roots
 }
 
 // NewStateProcessor initialises a new StateProcessor.
