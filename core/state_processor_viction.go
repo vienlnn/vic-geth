@@ -233,28 +233,27 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 	if tx.To() == nil || p.config.Viction == nil {
 		return false, nil, 0, nil, nil
 	}
-	to := *tx.To()
 	vicConfig := p.config.Viction
 
 	// 0x89 — block-signer transaction
-	if to == vicConfig.ValidatorBlockSignContract && p.config.IsTIPSigning(header.Number) {
+	if tx.IsSigningTransaction(vicConfig.ValidatorBlockSignContract) && p.config.IsTIPSigning(header.Number) {
 		return p.applySignTransaction(statedb, tx, header, usedGas)
 	}
 
 	// 0x91 — TomoX order-matching batch (active only in TIPTomoX..Atlas window)
-	if to == vicConfig.TomoXContract && p.config.IsTomoXEnabled(header.Number) {
+	if tx.IsTradingTransaction(vicConfig.TomoXContract) && p.config.IsTomoXEnabled(header.Number) {
 		return p.applyTomoXTx(statedb, tx, header, usedGas)
 	}
 
 	// 0x92 — trading state root commit; verified in afterProcess
-	if to == vicConfig.TradingStateContract && p.config.IsTomoXEnabled(header.Number) {
+	if tx.To() != nil && *tx.To() == vicConfig.TradingStateContract && p.config.IsTomoXEnabled(header.Number) {
 		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
 	}
 
 	// 0x93 — TomoZ lending order-matching batch.
 	// Outer gate matches victionchain: IsTomoXEnabled (TIPTomoX..Atlas).
 	// Inner matching only runs once TIPTomoXLending is also active.
-	if to == vicConfig.LendingContract && p.config.IsTomoXEnabled(header.Number) {
+	if tx.IsLendingTransaction(vicConfig.LendingContract) && p.config.IsTomoXEnabled(header.Number) {
 		if p.config.IsTomoXLendingEnabled(header.Number) {
 			return p.applyLendingTx(statedb, tx, header, usedGas)
 		}
@@ -263,7 +262,7 @@ func (p *StateProcessor) applyVictionTransaction(statedb *state.StateDB, tx *typ
 
 	// 0x94 — lending finalized trade.
 	// Same outer gate as victionchain: IsTomoXEnabled.
-	if to == vicConfig.LendingFinalizedContract && p.config.IsTomoXEnabled(header.Number) {
+	if tx.IsLendingFinalizedTradeTransaction(vicConfig.LendingFinalizedContract) && p.config.IsTomoXEnabled(header.Number) {
 		return p.applyEmptyTransaction(statedb, tx, header, usedGas)
 	}
 
@@ -422,29 +421,33 @@ func (p *StateProcessor) applyTomoXTx(statedb *state.StateDB, tx *types.Transact
 	if !isEpochBlock && len(tx.Data()) > 0 && p.victionState != nil && p.victionState.tradingStateDB != nil && p.tradingEngine != nil {
 		txMatchBatch, err := tradingstate.DecodeTxMatchesBatch(tx.Data())
 		if err != nil {
-			return true, nil, 0, fmt.Errorf("TomoX: failed to decode TxMatchBatch tx=%s: %w", tx.Hash().Hex(), err), nil
-		}
+			// victionchain's ExtractTradingTransactions silently skips 0x91 txs whose data
+			// cannot be decoded as a JSON TxMatchBatch (e.g. ABI-encoded "TomoXSign" calls).
+			// Those txs still receive an empty receipt via ApplyEmptyTransaction — which is
+			// exactly what we do here: log and fall through to the receipt below.
+			log.Warn("TomoX: skipping non-batch 0x91 tx", "tx", tx.Hash(), "err", err)
+		} else {
+			coinbase := header.Coinbase
+			tradingEngine := p.tradingEngine
+			tradingStateDB := p.victionState.tradingStateDB
 
-		coinbase := header.Coinbase
-		tradingEngine := p.tradingEngine
-		tradingStateDB := p.victionState.tradingStateDB
+			for i, txDataMatch := range txMatchBatch.Data {
+				order, err := txDataMatch.DecodeOrder()
+				if err != nil {
+					log.Warn("TomoX: failed to decode order, skipping", "index", i, "err", err)
+					continue
+				}
 
-		for i, txDataMatch := range txMatchBatch.Data {
-			order, err := txDataMatch.DecodeOrder()
-			if err != nil {
-				log.Warn("TomoX: failed to decode order, skipping", "index", i, "err", err)
-				continue
-			}
+				orderBook := tradingstate.GetTradingOrderBookHash(order.BaseToken, order.QuoteToken)
 
-			orderBook := tradingstate.GetTradingOrderBookHash(order.BaseToken, order.QuoteToken)
+				_, rejects, err := tradingEngine.CommitOrder(header, coinbase, p.bc, statedb, tradingStateDB, orderBook, order)
+				if err != nil {
+					return true, nil, 0, fmt.Errorf("TomoX: CommitOrder failed index=%d order=%s: %w", i, order.Hash.Hex(), err), nil
+				}
 
-			_, rejects, err := tradingEngine.CommitOrder(header, coinbase, p.bc, statedb, tradingStateDB, orderBook, order)
-			if err != nil {
-				return true, nil, 0, fmt.Errorf("TomoX: CommitOrder failed index=%d order=%s: %w", i, order.Hash.Hex(), err), nil
-			}
-
-			if len(rejects) > 0 {
-				log.Debug("TomoX: orders rejected", "count", len(rejects))
+				if len(rejects) > 0 {
+					log.Debug("TomoX: orders rejected", "count", len(rejects))
+				}
 			}
 		}
 	}
@@ -485,27 +488,29 @@ func (p *StateProcessor) applyLendingTx(statedb *state.StateDB, tx *types.Transa
 
 		txMatchBatch, err := lendingstate.DecodeTxLendingBatch(tx.Data())
 		if err != nil {
-			return true, nil, 0, fmt.Errorf("TomoZ: failed to decode TxLendingBatch tx=%s: %w", tx.Hash().Hex(), err), nil
-		}
+			// victionchain's ExtractLendingTransactions silently skips non-JSON 0x93 txs.
+			// Fall through to produce an empty receipt, matching ApplyEmptyTransaction.
+			log.Warn("TomoZ: skipping non-batch 0x93 tx", "tx", tx.Hash(), "err", err)
+		} else {
+			coinbase := header.Coinbase
+			lendingStateDB := p.victionState.lendingStateDB
+			tradingStateDB := p.victionState.tradingStateDB
 
-		coinbase := header.Coinbase
-		lendingStateDB := p.victionState.lendingStateDB
-		tradingStateDB := p.victionState.tradingStateDB
-
-		for i, order := range txMatchBatch.Data {
-			if order == nil {
-				continue
-			}
-			lendingOrderBook := lendingstate.GetLendingOrderBookHash(order.LendingToken, order.Term)
-			_, rejects, err := p.lendingEngine.CommitOrder(
-				header, coinbase, p.bc, statedb,
-				lendingStateDB, tradingStateDB, lendingOrderBook, order,
-			)
-			if err != nil {
-				return true, nil, 0, fmt.Errorf("TomoZ: CommitOrder failed index=%d: %w", i, err), nil
-			}
-			if len(rejects) > 0 {
-				log.Debug("TomoZ: lending orders rejected", "count", len(rejects))
+			for i, order := range txMatchBatch.Data {
+				if order == nil {
+					continue
+				}
+				lendingOrderBook := lendingstate.GetLendingOrderBookHash(order.LendingToken, order.Term)
+				_, rejects, err := p.lendingEngine.CommitOrder(
+					header, coinbase, p.bc, statedb,
+					lendingStateDB, tradingStateDB, lendingOrderBook, order,
+				)
+				if err != nil {
+					return true, nil, 0, fmt.Errorf("TomoZ: CommitOrder failed index=%d: %w", i, err), nil
+				}
+				if len(rejects) > 0 {
+					log.Debug("TomoZ: lending orders rejected", "count", len(rejects))
+				}
 			}
 		}
 	}
