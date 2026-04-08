@@ -74,12 +74,17 @@ func (bc *BlockChain) commitVictionStateDirect(block *types.Block) error {
 //   - Reference(root) keeps the root alive in the trie.Database dirty cache.
 //   - Push onto sp.tradingTriegc / sp.lendingTriegc for later GC.
 //
-// On flush (same dual gate as victionchain: gcproc > TrieTimeLimit OR
-// chosen > lastWrite+TriesInMemory):
-//   - Look up the trading/lending root of the block TriesInMemory behind HEAD
-//     from the block's 0x92/0x94 system tx (same as victionchain).
-//   - Commit that root to LevelDB.
+// On flush (every block that advances chosen past the last committed block):
+//   - Commit the trading/lending root of the block TriesInMemory behind HEAD.
 //   - Dereference all roots older than `chosen` from the GC queue.
+//
+// The commit gate fires on every advancing `chosen` (not gated behind a
+// separate TriesInMemory gap like the EVM path). This matches victionchain's
+// WriteBlockWithState, where trading commit is inside the same if-block as the
+// EVM commit — they always fire together. Using a separate gap gate in vic-geth
+// created a window where roots were Dereference'd from the dirty cache before
+// being committed to LevelDB, causing "failed find best price ask trie" errors
+// during sync (Bug 8).
 func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 	sp, ok := bc.processor.(*StateProcessor)
 	if !ok || sp.victionState == nil {
@@ -98,9 +103,10 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 			if current > TriesInMemory {
 				chosen := current - TriesInMemory
 
-				// Flush to LevelDB when time gate or block-gap gate triggers —
-				// matching victionchain's condition exactly.
-				if bc.gcproc > bc.cacheConfig.TrieTimeLimit || chosen > sp.lastTradingWrite+TriesInMemory {
+				// Commit on every advancing block, not just every TriesInMemory gap.
+				// This guarantees the root at `chosen` is in LevelDB before the
+				// Dereference loop below removes it from the dirty cache.
+				if chosen > sp.lastTradingWrite {
 					header := bc.GetHeaderByNumber(chosen)
 					if header == nil {
 						log.Warn("TomoX: reorg in progress, trading trie commit postponed", "number", chosen)
@@ -146,7 +152,8 @@ func (bc *BlockChain) commitVictionStateDeferred(block *types.Block) error {
 			if current > TriesInMemory {
 				chosen := current - TriesInMemory
 
-				if bc.gcproc > bc.cacheConfig.TrieTimeLimit || chosen > sp.lastLendingWrite+TriesInMemory {
+				// Same commit-on-every-advance strategy as trading trie.
+				if chosen > sp.lastLendingWrite {
 					header := bc.GetHeaderByNumber(chosen)
 					if header == nil {
 						log.Warn("TomoZ: reorg in progress, lending trie commit postponed", "number", chosen)
