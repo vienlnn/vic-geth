@@ -141,6 +141,24 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 		}
 	}
 
+	// At epoch+LendingLiquidateTradeBlock boundaries, run liquidation before the tx
+	// loop so that AutoTopUp changes land on the same trie objects that will be used
+	// during applyLendingTx and committed in afterProcess.
+	if p.lendingEngine != nil && p.config.Posv != nil &&
+		p.config.IsTomoXEnabled(header.Number) &&
+		p.config.Viction != nil &&
+		header.Number.Uint64()%p.config.Posv.Epoch == uint64(p.config.Viction.LendingLiquidateTradeBlock) &&
+		p.victionState.tradingStateDB != nil && p.victionState.lendingStateDB != nil {
+
+		_, _, _, _, _, err := p.lendingEngine.ProcessLiquidationData(
+			header, p.bc, statedb, p.victionState.tradingStateDB, p.victionState.lendingStateDB,
+		)
+		if err != nil {
+			return fmt.Errorf("TomoZ: ProcessLiquidationData failed at block %d: %w", header.Number, err)
+		}
+		log.Debug("TomoZ: epoch liquidation processed", "block", header.Number.Uint64())
+	}
+
 	InitSignerInTransactions(p.config, header, block.Transactions())
 
 	return nil

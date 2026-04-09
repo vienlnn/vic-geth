@@ -1887,13 +1887,6 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 				}(time.Now(), followup, throwaway, &followupInterrupt)
 			}
 		}
-		// Viction pre-process hook: epoch-gated lending liquidations must run BEFORE
-		// bc.processor.Process() so that statedb mutations are visible to transactions.
-		if err := bc.beforeProcessViction(block, statedb); err != nil {
-			bc.reportBlock(block, nil, err)
-			atomic.StoreUint32(&followupInterrupt, 1)
-			return it.index, err
-		}
 		// Process block using the parent state as reference point
 		substart := time.Now()
 		receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
