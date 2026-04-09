@@ -25,9 +25,9 @@ import (
 //  3. Every TriesInMemory blocks: commit the root that is TriesInMemory behind
 //     HEAD to LevelDB, then Dereference older roots that are no longer needed.
 //
-// This matches victionchain's WriteBlockWithState deferred commit strategy and
-// avoids a LevelDB write on every single block (which would cause excessive
-// write amplification).
+// This mirrors the deferred-commit strategy used for the main EVM state trie
+// and avoids a LevelDB write on every single block (which would cause
+// excessive write amplification).
 func (bc *BlockChain) commitVictionState(block *types.Block) error {
 	if !bc.chainConfig.IsTomoXEnabled(block.Number()) {
 		return nil
@@ -70,10 +70,10 @@ func (bc *BlockChain) commitVictionStateDirect(block *types.Block) error {
 //
 // Unlike the EVM trie, we commit the current block's root to LevelDB on every
 // block rather than deferring the commit TriesInMemory blocks. This is
-// necessary because GetTradingStateRoot (used in the victionchain deferred
-// path) returns EmptyRoot for any block that has no 0x92 system tx, causing
-// dirty nodes to accumulate in the trie.Database dirty cache until Dereference
-// removes them without ever being written — the "nodes=0" bug.
+// necessary because GetTradingStateRoot returns EmptyRoot for any block that
+// has no 0x92 system tx, causing dirty nodes to accumulate in the
+// trie.Database dirty cache until Dereference removes them without ever being
+// written — the "nodes=0" bug.
 //
 // We still push every root onto the GC queue and defer the Dereference by
 // TriesInMemory blocks, which is sufficient for reorg safety (same as EVM).

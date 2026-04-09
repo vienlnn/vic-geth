@@ -1,3 +1,4 @@
+// Copyright 2026 The Vic-geth Authors
 package types
 
 import (
