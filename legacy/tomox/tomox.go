@@ -129,6 +129,16 @@ func (tomox *TomoX) GetAveragePriceLastEpoch(chain tradingstate.ChainContext, st
 	return nil, nil
 }
 
+// GetStateCache returns the trie-node cache backed by the tomox LevelDB.
+func (tomox *TomoX) GetStateCache() tradingstate.Database {
+	return tomox.StateCache
+}
+
+// GetTriegc returns the garbage-collection priority queue for the trading trie.
+func (tomox *TomoX) GetTriegc() *prque.Prque {
+	return tomox.Triegc
+}
+
 // return tokenQuantity (after convert from TOMO to token), tokenPriceInTOMO, error
 func (tomox *TomoX) ConvertTOMOToToken(chain tradingstate.ChainContext, statedb *state.StateDB, tradingStateDb *tradingstate.TradingStateDB, token common.Address, quantity *big.Int) (*big.Int, *big.Int, error) {
 	if token.String() == tradingstate.TomoNativeAddress {

@@ -668,6 +668,7 @@ func DoSettleBalance(coinbase common.Address, takerOrder, makerOrder *lendingsta
 		mapBalances[settleBalance.Maker.OutToken][common.HexToAddress(lendingstate.LendingLockAddress)] = newCollateralTokenLock
 	}
 	masternodeOwner, _ := statedb.VicGetValidatorInfo(common.HexToAddress(tradingstate.ValidatorContract), coinbase)
+	log.Debug("DoSettleBalance masternode fee", "coinbase", coinbase, "masternodeOwner", masternodeOwner, "matchingFee", matchingFee)
 	statedb.AddBalance(masternodeOwner, matchingFee)
 	for token, balances := range mapBalances {
 		for adrr, value := range balances {
@@ -741,6 +742,7 @@ func (l *Lending) ProcessCancelOrder(header *types.Header, lendingStateDB *lendi
 	// relayers pay TOMO for masternode
 	lendingstate.SubRelayerFee(originOrder.Relayer, lendingstate.RelayerLendingCancelFee, statedb)
 	masternodeOwner, _ := statedb.VicGetValidatorInfo(common.HexToAddress(tradingstate.ValidatorContract), coinbase)
+	log.Debug("ProcessCancelOrder masternode fee", "coinbase", coinbase, "masternodeOwner", masternodeOwner, "cancelFee", lendingstate.RelayerLendingCancelFee)
 	statedb.AddBalance(masternodeOwner, lendingstate.RelayerLendingCancelFee)
 	relayerOwner := lendingstate.GetRelayerOwner(originOrder.Relayer, statedb)
 	switch originOrder.Side {
