@@ -17,7 +17,7 @@ func (st *StateTransition) vrc25BuyGas() error {
 	if victionConfig == nil || victionConfig.VRC25Contract == (common.Address{}) {
 		return nil
 	}
-
+	
 	feeCap := vrc25.GetFeeCapacity(st.state, victionConfig.VRC25Contract, st.msg.To())
 	if feeCap == nil || feeCap.Sign() == 0 {
 		return nil
@@ -26,6 +26,12 @@ func (st *StateTransition) vrc25BuyGas() error {
 	blockNum := st.evm.Context.BlockNumber
 
 	if !st.evm.ChainConfig().IsAtlas(blockNum) {
+		// Pre-Atlas: token must be in the tokens[] array to be eligible.
+		// A token can have non-zero tokensState capacity but NOT be in the array
+		if !vrc25.IsTokenInArray(st.state, victionConfig.VRC25Contract, *st.msg.To()) {
+			return nil
+		}
+
 		var effectiveGasPrice *big.Int
 		if st.evm.ChainConfig().TIPTRC21FeeBlock != nil && blockNum.Cmp(st.evm.ChainConfig().TIPTRC21FeeBlock) > 0 {
 			effectiveGasPrice = (*big.Int)(victionConfig.VRC25GasPrice) // 250,000,000
