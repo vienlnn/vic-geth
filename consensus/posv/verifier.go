@@ -356,7 +356,9 @@ func (c *Posv) verifySeal(chainH consensus.ChainHeaderReader, header *types.Head
 		}
 	}
 
+	// [7s62] recency check: prevent a signer from sealing two consecutive blocks.
 	for seen, recent := range snap.Recents {
+		log.Trace("[7s62][POSV-verifier] recency check", "recent", recent, "creator", creator)
 		if len(validators) <= 1 {
 			break
 		}
