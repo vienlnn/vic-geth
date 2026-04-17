@@ -220,3 +220,11 @@ func (miner *Miner) DisablePreseal() {
 func (miner *Miner) SubscribePendingLogs(ch chan<- []*types.Log) event.Subscription {
 	return miner.worker.pendingLogsFeed.Subscribe(ch)
 }
+
+// SetPosvSelfAttestHook installs a callback that is invoked in resultLoop
+// immediately after a block is sealed, before it is written to the database.
+// If the hook returns a non-nil block, that attested block is used instead of
+// the original.  Used by the POSV backend to handle the creator==M2 case.
+func (miner *Miner) SetPosvSelfAttestHook(fn func(*types.Block) *types.Block) {
+	miner.worker.posvSelfAttestHook = fn
+}

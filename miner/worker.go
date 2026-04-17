@@ -18,6 +18,7 @@ package miner
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/big"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
+	"github.com/ethereum/go-ethereum/consensus/posv"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -75,6 +77,9 @@ const (
 
 	// staleThreshold is the maximum depth of the acceptable stale block.
 	staleThreshold = 7
+
+	posvWaitPeriod           = 10 * time.Second
+	posvWaitPeriodCheckpoint = 20 * time.Second // longer wait per hop near epoch boundary (matches victionchain)
 )
 
 // environment is the worker's current environment and holds all of the current state information.
@@ -166,6 +171,13 @@ type worker struct {
 	snapshotBlock *types.Block
 	snapshotState *state.StateDB
 
+	// posvLastBlockCommitHash stores the hash of the most recently committed
+	// POSV block to prevent duplicate seals for the same parent.
+	// Accessed from mainLoop only; sync/atomic.Value makes the intent explicit
+	// and keeps the race detector happy if a future refactor introduces
+	// cross-goroutine access.  Stores common.Hash; zero value == never set.
+	posvLastBlockCommitHash atomic.Value
+
 	// atomic status counters
 	running int32 // The indicator whether the consensus engine is running or not.
 	newTxs  int32 // New arrival transaction count since last sealing work submitting.
@@ -179,6 +191,12 @@ type worker struct {
 
 	// External functions
 	isLocalBlock func(block *types.Block) bool // Function used to determine whether the specified block is mined by local miner.
+
+	// [POSV] self-attest hook: set by the eth backend when this node is also
+	// the assigned M2 for blocks it mines.  Called in resultLoop before
+	// WriteBlockWithState so the persisted block already carries header.Attestor.
+	// Nil when not applicable (non-POSV chains, or M2 duty handled by a peer).
+	posvSelfAttestHook func(*types.Block) *types.Block
 
 	// Test hooks
 	newTaskHook  func(*task)                        // Method to call upon receiving a new sealing task.
@@ -431,7 +449,11 @@ func (w *worker) mainLoop() {
 	for {
 		select {
 		case req := <-w.newWorkCh:
-			w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
+			if w.chainConfig.Posv != nil {
+				w.commitNewWorkWithPosv(req.interrupt, req.noempty, req.timestamp)
+			} else {
+				w.commitNewWork(req.interrupt, req.noempty, req.timestamp)
+			}
 
 		case ev := <-w.chainSideCh:
 			// Short circuit for duplicate side blocks
@@ -595,6 +617,18 @@ func (w *worker) resultLoop() {
 				log.Error("Block found but no relative pending task", "number", block.Number(), "sealhash", sealhash, "hash", hash)
 				continue
 			}
+			// [POSV] self-attest: when this node is both the block creator (M1) and
+			// the assigned attestor (M2), attach the Attestor signature before
+			// persisting.  Locally mined blocks bypass the P2P fetcher, so the
+			// normal posvPropagatedBlockAppendAttestor hook never fires for them.
+			// Run this before stamping receipts/logs so all hashes are consistent
+			// in a single pass.
+			if w.posvSelfAttestHook != nil {
+				if attested := w.posvSelfAttestHook(block); attested != nil {
+					block = attested
+					hash = block.Hash()
+				}
+			}
 			// Different block could share same sealhash, deep copy here to prevent write-write conflict.
 			var (
 				receipts = make([]*types.Receipt, len(task.receipts))
@@ -627,8 +661,15 @@ func (w *worker) resultLoop() {
 			// Broadcast the block and announce chain insertion event
 			w.mux.Post(core.NewMinedBlockEvent{Block: block})
 
-			// Insert the block into the set of pending ones to resultLoop for confirmations
-			w.unconfirmed.Insert(block.NumberU64(), block.Hash())
+			// Insert the block into the set of pending ones to resultLoop for confirmations.
+			// POSV Prepare clears header.Coinbase; locally sealed blocks use this node's etherbase.
+			creator := block.Coinbase()
+			if creator == (common.Address{}) {
+				w.mu.RLock()
+				creator = w.coinbase
+				w.mu.RUnlock()
+			}
+			w.unconfirmed.Insert(block.NumberU64(), block.Hash(), creator)
 
 		case <-w.exitCh:
 			return
@@ -719,6 +760,37 @@ func (w *worker) updateSnapshot() {
 	w.snapshotState = w.current.state.Copy()
 }
 
+// ensureGasPool initialises the gas pool for the current environment if it has
+// not been set yet.  Returns false when w.current is nil (caller should abort).
+func (w *worker) ensureGasPool() bool {
+	if w.current == nil {
+		return false
+	}
+	if w.current.gasPool == nil {
+		w.current.gasPool = new(core.GasPool).AddGas(w.current.header.GasLimit)
+	}
+	return true
+}
+
+// checkInterrupt inspects the interrupt signal and sends resubmit-interval
+// feedback when needed.  Returns (shouldReturn, isNewHead):
+//   - shouldReturn=true  → the caller must stop processing transactions.
+//   - isNewHead=true     → the current semi-finished work should be discarded
+//     (new head arrived); false means resubmit (work is still usable).
+func (w *worker) checkInterrupt(interrupt *int32) (shouldReturn bool, isNewHead bool) {
+	if interrupt == nil || atomic.LoadInt32(interrupt) == commitInterruptNone {
+		return false, false
+	}
+	if atomic.LoadInt32(interrupt) == commitInterruptResubmit {
+		ratio := float64(w.current.header.GasLimit-w.current.gasPool.Gas()) / float64(w.current.header.GasLimit)
+		if ratio < 0.1 {
+			ratio = 0.1
+		}
+		w.resubmitAdjustCh <- &intervalAdjust{ratio: ratio, inc: true}
+	}
+	return true, atomic.LoadInt32(interrupt) == commitInterruptNewHead
+}
+
 func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Address) ([]*types.Log, error) {
 	snap := w.current.state.Snapshot()
 
@@ -734,13 +806,8 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 }
 
 func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coinbase common.Address, interrupt *int32) bool {
-	// Short circuit if current is nil
-	if w.current == nil {
+	if !w.ensureGasPool() {
 		return true
-	}
-
-	if w.current.gasPool == nil {
-		w.current.gasPool = new(core.GasPool).AddGas(w.current.header.GasLimit)
 	}
 
 	var coalescedLogs []*types.Log
@@ -752,19 +819,8 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 		// (3) worker recreate the mining block with any newly arrived transactions, the interrupt signal is 2.
 		// For the first two cases, the semi-finished work will be discarded.
 		// For the third case, the semi-finished work will be submitted to the consensus engine.
-		if interrupt != nil && atomic.LoadInt32(interrupt) != commitInterruptNone {
-			// Notify resubmit loop to increase resubmitting interval due to too frequent commits.
-			if atomic.LoadInt32(interrupt) == commitInterruptResubmit {
-				ratio := float64(w.current.header.GasLimit-w.current.gasPool.Gas()) / float64(w.current.header.GasLimit)
-				if ratio < 0.1 {
-					ratio = 0.1
-				}
-				w.resubmitAdjustCh <- &intervalAdjust{
-					ratio: ratio,
-					inc:   true,
-				}
-			}
-			return atomic.LoadInt32(interrupt) == commitInterruptNewHead
+		if stop, isNewHead := w.checkInterrupt(interrupt); stop {
+			return isNewHead
 		}
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
@@ -840,6 +896,74 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 	}
 	// Notify resubmit loop to decrease resubmitting interval if current interval is larger
 	// than the user-specified one.
+	if interrupt != nil {
+		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
+	}
+	return false
+}
+
+// commitSpecialTransactions applies special transactions in input order.
+func (w *worker) commitSpecialTransactions(txs types.Transactions, coinbase common.Address, interrupt *int32) bool {
+	if !w.ensureGasPool() {
+		return true
+	}
+	if len(txs) == 0 {
+		return false
+	}
+
+	for _, tx := range txs {
+		if stop, isNewHead := w.checkInterrupt(interrupt); stop {
+			return isNewHead
+		}
+		if w.current.gasPool.Gas() < params.TxGas {
+			log.Trace("Not enough gas for further special transactions", "have", w.current.gasPool, "want", params.TxGas)
+			break
+		}
+		if tx == nil {
+			continue
+		}
+		if tx.Protected() && !w.chainConfig.IsEIP155(w.current.header.Number) {
+			log.Trace("Ignoring replay protected special transaction", "hash", tx.Hash(), "eip155", w.chainConfig.EIP155Block)
+			continue
+		}
+		if tx.To() != nil && w.chainConfig != nil && w.chainConfig.Viction != nil {
+			// Validate BlockSigner special tx payload and target block range.
+			if *tx.To() == w.chainConfig.Viction.ValidatorBlockSignContract {
+				if len(tx.Data()) < 68 {
+					log.Trace("Skipping special transaction with invalid BlockSigner payload length", "hash", tx.Hash(), "len", len(tx.Data()))
+					continue
+				}
+				blkNumber := binary.BigEndian.Uint64(tx.Data()[8:40])
+				curr := w.current.header.Number.Uint64()
+				if w.chainConfig.Posv != nil && (blkNumber >= curr || blkNumber <= curr-w.chainConfig.Posv.Epoch*2) {
+					log.Trace("Skipping special transaction with invalid signed block number", "hash", tx.Hash(), "blkNumber", blkNumber, "current", curr)
+					continue
+				}
+			}
+		}
+		from, _ := types.Sender(w.current.signer, tx)
+		nonce := w.current.state.GetNonce(from)
+		if nonce != tx.Nonce() {
+			log.Trace("Skipping special transaction with invalid nonce", "sender", from, "stateNonce", nonce, "txNonce", tx.Nonce())
+			continue
+		}
+		w.current.state.Prepare(tx.Hash(), common.Hash{}, w.current.tcount)
+		_, err := w.commitTransaction(tx, coinbase)
+		switch {
+		case errors.Is(err, core.ErrGasLimitReached):
+			log.Trace("Gas limit exceeded for special transaction", "sender", from)
+			return false
+		case errors.Is(err, core.ErrNonceTooLow):
+			log.Trace("Skipping special transaction with low nonce", "sender", from, "nonce", tx.Nonce())
+		case errors.Is(err, core.ErrNonceTooHigh):
+			log.Trace("Skipping special transaction with high nonce", "sender", from, "nonce", tx.Nonce())
+		case errors.Is(err, nil):
+			w.current.tcount++
+		default:
+			log.Debug("Special transaction failed, skipped", "hash", tx.Hash(), "err", err)
+		}
+	}
+
 	if interrupt != nil {
 		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
 	}
@@ -975,6 +1099,166 @@ func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) 
 	w.commit(uncles, w.fullTaskHook, true, tstart)
 }
 
+func (w *worker) commitNewWorkWithPosv(interrupt *int32, noempty bool, timestamp int64) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	tstart := time.Now()
+	parent := w.chain.CurrentBlock()
+
+	if v := w.posvLastBlockCommitHash.Load(); v != nil && parent.Hash() == v.(common.Hash) {
+		return
+	}
+
+	if !w.turnCommitNewWorkWithPosv(parent.Header()) {
+		return
+	}
+
+	if parent.Time() >= uint64(timestamp) {
+		timestamp = int64(parent.Time() + 1)
+	}
+	// this will ensure we're not going off too far in the future
+	if now := time.Now().Unix(); timestamp > now+1 {
+		wait := time.Duration(timestamp-now) * time.Second
+		log.Info("Mining too far in the future", "wait", common.PrettyDuration(wait))
+		time.Sleep(wait)
+	}
+
+	num := parent.Number()
+	header := &types.Header{
+		ParentHash: parent.Hash(),
+		Number:     num.Add(num, common.Big1),
+		GasLimit:   core.CalcGasLimit(parent, w.config.GasFloor, w.config.GasCeil),
+		Extra:      w.extra,
+		Time:       uint64(timestamp),
+	}
+	// Only set the coinbase if our consensus engine is running (avoid spurious block rewards)
+	if w.isRunning() {
+		if w.coinbase == (common.Address{}) {
+			log.Error("Refusing to mine without etherbase")
+			return
+		}
+		header.Coinbase = w.coinbase
+	}
+	if err := w.engine.Prepare(w.chain, header); err != nil {
+		log.Error("Failed to prepare header for mining", "err", err)
+		return
+	}
+
+	daoBlock := w.chainConfig.DAOForkBlock
+	if daoBlock != nil {
+		limit := new(big.Int).Add(daoBlock, params.DAOForkExtraRange)
+		if header.Number.Cmp(daoBlock) >= 0 && header.Number.Cmp(limit) < 0 {
+			if w.chainConfig.DAOForkSupport {
+				header.Extra = common.CopyBytes(params.DAOForkBlockExtra)
+			} else if bytes.Equal(header.Extra, params.DAOForkBlockExtra) {
+				header.Extra = []byte{} // If miner opposes, don't let it use the reserved extra-data
+			}
+		}
+	}
+
+	err := w.makeCurrent(parent, header)
+	if err != nil {
+		log.Error("Failed to create mining context", "err", err)
+		return
+	}
+
+	work := w.current
+	if w.chainConfig.DAOForkSupport && w.chainConfig.DAOForkBlock != nil && w.chainConfig.DAOForkBlock.Cmp(header.Number) == 0 {
+		misc.ApplyDAOHardFork(work.state)
+	}
+	if w.chainConfig.TIPSigningBlock != nil && w.chainConfig.TIPSigningBlock.Cmp(header.Number) >= 0 {
+		work.state.DeleteAddress(w.chainConfig.Viction.ValidatorBlockSignContract)
+	}
+	if w.chainConfig.AtlasBlock != nil && w.chainConfig.AtlasBlock.Cmp(header.Number) >= 0 {
+		misc.ApplyVIPVRC25Upgrade(work.state, w.chainConfig.Viction, w.chainConfig.AtlasBlock, header.Number)
+	}
+	if w.chainConfig.SaigonBlock != nil && w.chainConfig.SaigonBlock.Cmp(header.Number) <= 0 {
+		misc.ApplySaigonHardFork(work.state, w.chainConfig.Viction, w.chainConfig.SaigonBlock, header.Number)
+	}
+
+	// [POSV] Epoch (checkpoint) blocks carry only POSV state mutations via Prepare/Finalize
+	// and must not include user transactions — matching victionchain's behaviour where
+	// pending txs are only fetched when number%epoch != 0.
+	// Regular blocks commit special (e.g. BlockSigner.sign) txs first in-order, then
+	// normal price-sorted txs.
+	// TX inclusion and uncle commitment are re-enabled once the block-sign hook ([7s62])
+	// is live in production; track via the TODO on SetPOSVSignBlockHook.
+
+	// Commit the new block
+	w.commit(nil, w.fullTaskHook, true, tstart)
+
+}
+
+func (w *worker) turnCommitNewWorkWithPosv(parentHeader *types.Header) bool {
+	// Pending block / snapshot updates must run even when the miner is stopped.
+	if !w.isRunning() || w.chainConfig.Posv == nil {
+		return true
+	}
+
+	c, engineOk := w.engine.(*posv.Posv)
+	if !engineOk {
+		log.Error("Chain has POSV config but consensus engine is not *posv.Posv")
+		return false
+	}
+	checkPointHeader := posv.GetCheckpointHeader(w.chainConfig.Posv, parentHeader, w.chain, nil)
+	validators := posv.ExtractValidatorsFromCheckpointHeader(checkPointHeader)
+	// IsMyTurn returns (inTurn, currentIndex, parentIndex, validatorCount, err).
+	ok, myIdx, parentIdx, nValidators, err := c.IsMyTurn(w.coinbase, parentHeader, validators)
+	if err != nil {
+		log.Warn("[Posv] Failed to trying to commit new work", "err", err)
+		return false
+	}
+	if !ok {
+		log.Info("[Posv] Not in turn to commit new block. Waiting...")
+		// Parent block author not in checkpoint list: only validators[0] is in-turn per IsMyTurn.
+		if parentIdx == -1 {
+			return false
+		}
+		// Our etherbase is not in the validator set.
+		if myIdx == -1 {
+			return false
+		}
+		// Hop counts forward steps from parent author to us on the validator ring (see posv.Distance).
+		h := Hop(nValidators, parentIdx, myIdx)
+		gap := posvWaitPeriod * time.Duration(h)
+		// Near the next checkpoint, out-of-turn nodes wait longer so the in-turn validator
+		// can seal the epoch block first (same rule as victionchain worker).
+		epoch := w.chainConfig.Posv.Epoch
+		if epoch > 0 {
+			nearest := epoch - (parentHeader.Number.Uint64() % epoch)
+			if uint64(h) >= nearest {
+				log.Info("[Posv] Near-epoch out-of-turn wait (checkpoint patience)", "parentNum", parentHeader.Number.Uint64(),
+					"nearestBlocksToCheckpoint", nearest, "hops", h, "gap", posvWaitPeriodCheckpoint*time.Duration(h))
+				gap = posvWaitPeriodCheckpoint * time.Duration(h)
+			}
+		}
+		waited := time.Since(time.Unix(int64(parentHeader.Time), 0))
+		if waited < 0 {
+			waited = 0
+		}
+		log.Info("[Posv] Waiting for next block", "gap", gap, "hops", h, "waited", waited)
+		if gap > waited {
+			return false
+		}
+		log.Info("Wait enough. It's my turn", "waited", waited)
+	}
+	return true
+}
+
+// Hop returns how many validator slots to wait after parentIdx before myIdx may seal,
+// for the round-robin order used with posvWaitPeriod / posvWaitPeriodCheckpoint. pre is parent block author's index, cur is ours.
+func Hop(len, pre, cur int) int {
+	switch {
+	case pre < cur:
+		return cur - (pre + 1)
+	case pre > cur:
+		return (len - pre) + (cur - 1)
+	default:
+		return len - 1
+	}
+}
+
 // commit runs any post-transaction state modifications, assembles the final block
 // and commits new work if consensus engine is running.
 func (w *worker) commit(uncles []*types.Header, interval func(), update bool, start time.Time) error {
@@ -992,6 +1276,9 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 		select {
 		case w.taskCh <- &task{receipts: receipts, state: s, block: block, createdAt: time.Now()}:
 			w.unconfirmed.Shift(block.NumberU64() - 1)
+			if w.chainConfig.Posv != nil && w.isRunning() {
+				w.posvLastBlockCommitHash.Store(block.Hash())
+			}
 			log.Info("Commit new mining work", "number", block.Number(), "sealhash", w.engine.SealHash(block.Header()),
 				"uncles", len(uncles), "txs", w.current.tcount,
 				"gas", block.GasUsed(), "fees", totalFees(block, receipts),
