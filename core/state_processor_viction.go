@@ -173,6 +173,9 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	if !p.config.IsAtlas(header.Number) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) {
 		p.victionState.feeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
+		activeFeeBalance = p.victionState.feeBalance
+	} else {
+		activeFeeBalance = nil
 	}
 
 	// Open TomoX and TomoZ tries from the parent block.
@@ -240,6 +243,10 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 // transaction embedded in the block. Called once after all transactions have
 // been applied.
 func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB) error {
+	// Clear the package-level feeBalance pointer; it is only valid during
+	// block processing and must not leak to the next block.
+	activeFeeBalance = nil
+
 	// Pre-Atlas: flush accumulated VRC25 fee updates to state.
 	if p.victionState != nil && !p.config.IsAtlas(block.Number()) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) &&

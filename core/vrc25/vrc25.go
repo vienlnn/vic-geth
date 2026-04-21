@@ -128,26 +128,6 @@ func GetAllFeeCapacities(statedb vm.StateDB, vrc25Contract common.Address) map[c
 	return result
 }
 
-// IsTokenInArray reports whether addr appears in the VRC25 issuer contract's
-// tokens[] dynamic array (slot 1). Pre-Atlas, only tokens present in this
-// array are eligible for VRC25 sponsorship
-func IsTokenInArray(statedb vm.StateDB, vrc25Contract common.Address, addr common.Address) bool {
-	tokensSlot := state.StorageLocationFromSlot(SlotVRC25Contract["tokens"])
-	tokenCount := statedb.GetState(vrc25Contract, tokensSlot.Hash()).Big().Uint64()
-	for i := uint64(0); i < tokenCount; i++ {
-		elemKey := state.StorageLocationOfDynamicArrayElement(tokensSlot, i, 1)
-		tokenHash := statedb.GetState(vrc25Contract, elemKey.Hash())
-		if tokenHash == (common.Hash{}) {
-			continue
-		}
-		token := common.BytesToAddress(tokenHash.Bytes())
-		if token == addr {
-			return true
-		}
-	}
-	return false
-}
-
 // we use vm.StateDB interface instead of *StateDB
 func GetFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, addr *common.Address) *big.Int {
 	if addr == nil {

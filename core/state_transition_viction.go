@@ -9,6 +9,11 @@ import (
 	"github.com/ethereum/go-ethereum/core/vrc25"
 )
 
+// activeFeeBalance holds the per-block running VRC25 fee capacity map for
+// the block currently being processed.  It is set by beforeProcess (via
+// victionProcessorState) and read by vrc25BuyGas during each transaction.
+var activeFeeBalance map[common.Address]*big.Int
+
 // vrc25BuyGas checks VRC25 sponsorship eligibility and adjusts payer/gasPrice.
 func (st *StateTransition) vrc25BuyGas() error {
 	st.payer = st.msg.From()
@@ -17,18 +22,20 @@ func (st *StateTransition) vrc25BuyGas() error {
 	if victionConfig == nil || victionConfig.VRC25Contract == (common.Address{}) {
 		return nil
 	}
-	
-	feeCap := vrc25.GetFeeCapacity(st.state, victionConfig.VRC25Contract, st.msg.To())
-	if feeCap == nil || feeCap.Sign() == 0 {
-		return nil
-	}
 
 	blockNum := st.evm.Context.BlockNumber
 
 	if !st.evm.ChainConfig().IsAtlas(blockNum) {
-		// Pre-Atlas: token must be in the tokens[] array to be eligible.
-		// A token can have non-zero tokensState capacity but NOT be in the array
-		if !vrc25.IsTokenInArray(st.state, victionConfig.VRC25Contract, *st.msg.To()) {
+		// Pre-Atlas path: use the running activeFeeBalance map for eligibility.
+		// This map is loaded from state at block start (beforeProcess) and
+		// decremented after each VRC25 tx (afterApplyTransaction), ensuring
+		// correct capacity tracking across multiple txs to the same token.
+		if st.msg.To() == nil || activeFeeBalance == nil {
+			return nil
+		}
+		feeCap, ok := activeFeeBalance[*st.msg.To()]
+		if !ok || feeCap == nil {
+			// Token not in the registered list — treat as regular VIC tx.
 			return nil
 		}
 
@@ -41,12 +48,23 @@ func (st *StateTransition) vrc25BuyGas() error {
 
 		mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), effectiveGasPrice)
 		if feeCap.Cmp(mgval) < 0 {
+			// Token is registered but capacity is insufficient — fall through
+			// to regular VIC path.  buyGas will then check the sender's VIC
+			// balance at the original gasPrice (which for VRC25 txs is
+			// typically 0, so this effectively rejects the tx with
+			// ErrInsufficientFunds
 			return nil
 		}
 		// Set payer = VRC25Contract so isVRC25Transaction() returns true.
 		// buyGas will skip the balance check and SubBalance for pre-Atlas sponsored txs.
 		st.gasPrice = effectiveGasPrice
 		st.payer = victionConfig.VRC25Contract
+		return nil
+	}
+
+	// Post-Atlas: read capacity from statedb (each tx writes back via vrc25RefundGas).
+	feeCap := vrc25.GetFeeCapacity(st.state, victionConfig.VRC25Contract, st.msg.To())
+	if feeCap == nil || feeCap.Sign() == 0 {
 		return nil
 	}
 
