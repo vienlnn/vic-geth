@@ -18,6 +18,11 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// activeFeeBalance holds the per-block running VRC25 fee capacity map for
+// the block currently being processed.  It is set by beforeProcess (via
+// victionProcessorState) and read by vrc25BuyGas during each transaction.
+var activeFeeBalance map[common.Address]*big.Int
+
 // TradingEngine is the interface the TomoX engine must satisfy.
 // Defined here to avoid an import cycle between core and legacy/tomox.
 type TradingEngine interface {
@@ -173,6 +178,9 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 	if !p.config.IsAtlas(header.Number) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) {
 		p.victionState.feeBalance = vrc25.GetAllFeeCapacities(statedb, p.config.Viction.VRC25Contract)
+		activeFeeBalance = p.victionState.feeBalance
+	} else {
+		activeFeeBalance = nil
 	}
 
 	// Open TomoX and TomoZ tries from the parent block.
@@ -240,6 +248,10 @@ func (p *StateProcessor) beforeProcess(block *types.Block, statedb *state.StateD
 // transaction embedded in the block. Called once after all transactions have
 // been applied.
 func (p *StateProcessor) afterProcess(block *types.Block, statedb *state.StateDB) error {
+	// Clear the package-level feeBalance pointer; it is only valid during
+	// block processing and must not leak to the next block.
+	activeFeeBalance = nil
+
 	// Pre-Atlas: flush accumulated VRC25 fee updates to state.
 	if p.victionState != nil && !p.config.IsAtlas(block.Number()) &&
 		p.config.Viction != nil && p.config.Viction.VRC25Contract != (common.Address{}) &&
@@ -437,12 +449,27 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 
 	blockNum := p.victionState.currentBlockNumber
 
-	if p.config.IsAtlas(blockNum) || tx.To() == nil {
+	if tx.To() == nil {
 		return nil
 	}
 
 	token := *tx.To()
 	vicCfg := p.config.Viction
+
+	if p.config.IsAtlas(blockNum) {
+		// Post-Atlas: charge VRC25 token fee for failed sponsored txs.
+		if receipt.Status == types.ReceiptStatusFailed && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
+			feeCap := vrc25.GetFeeCapacity(statedb, vicCfg.VRC25Contract, tx.To())
+			fee := new(big.Int).Mul(
+				new(big.Int).SetUint64(usedGas),
+				(*big.Int)(vicCfg.VRC25GasPrice),
+			)
+			if feeCap != nil && feeCap.Cmp(fee) > 0 {
+				vrc25.PayFeeWithVRC25(statedb, msg.From(), token)
+			}
+		}
+		return nil
+	}
 
 	// Pre-Atlas: accumulate VRC25 fee deductions into feeUpdated; flushed in afterProcess.
 	if p.victionState.feeBalance != nil {
