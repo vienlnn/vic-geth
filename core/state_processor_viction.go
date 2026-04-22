@@ -444,12 +444,27 @@ func (p *StateProcessor) afterApplyTransaction(tx *types.Transaction, msg types.
 
 	blockNum := p.victionState.currentBlockNumber
 
-	if p.config.IsAtlas(blockNum) || tx.To() == nil {
+	if tx.To() == nil {
 		return nil
 	}
 
 	token := *tx.To()
 	vicCfg := p.config.Viction
+
+	if p.config.IsAtlas(blockNum) {
+		// Post-Atlas: charge VRC25 token fee for failed sponsored txs.
+		if receipt.Status == types.ReceiptStatusFailed && vicCfg != nil && vicCfg.VRC25GasPrice != nil {
+			feeCap := vrc25.GetFeeCapacity(statedb, vicCfg.VRC25Contract, tx.To())
+			fee := new(big.Int).Mul(
+				new(big.Int).SetUint64(usedGas),
+				(*big.Int)(vicCfg.VRC25GasPrice),
+			)
+			if feeCap != nil && feeCap.Cmp(fee) > 0 {
+				vrc25.PayFeeWithVRC25(statedb, msg.From(), token)
+			}
+		}
+		return nil
+	}
 
 	// Pre-Atlas: accumulate VRC25 fee deductions into feeUpdated; flushed in afterProcess.
 	if p.victionState.feeBalance != nil {
