@@ -83,28 +83,28 @@ func (st *StateTransition) isVRC25Transaction() bool {
 	return st.payer != st.msg.From()
 }
 
-// vrc25RefundGas handles gas refund for sponsored transactions.
+// vrc25RefundGas handles gas refund for VRC25-sponsored transactions.
+// The caller (refundGas) guarantees this is only called when isVRC25Transaction() is true.
 func (st *StateTransition) vrc25RefundGas(remaining *big.Int) {
-	if st.isVRC25Transaction() {
-		blockNum := st.evm.Context.BlockNumber
-		if !st.evm.ChainConfig().IsAtlas(blockNum) {
-			// Pre-Atlas: nothing
-			return
-		}
-
-		// Post-Atlas: deduct exactly gasUsed×price from the token's storage slot once.
-		addr := st.msg.To()
-		victionConfig := st.evm.ChainConfig().Viction
-		vrc25Contract := victionConfig.VRC25Contract
-		feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
-		if feeCap != nil {
-			gasUsedFee := new(big.Int).Mul(
-				new(big.Int).SetUint64(st.gasUsed()),
-				(*big.Int)(victionConfig.VRC25GasPrice),
-			)
-			vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Sub(feeCap, gasUsedFee))
-		}
+	blockNum := st.evm.Context.BlockNumber
+	if !st.evm.ChainConfig().IsAtlas(blockNum) {
+		// Pre-Atlas VRC25: buyGas was skipped entirely, nothing to refund.
+		return
 	}
+
+	// Post-Atlas VRC25: deduct exactly gasUsed * price from the token's storage slot.
+	addr := st.msg.To()
+	victionConfig := st.evm.ChainConfig().Viction
+	vrc25Contract := victionConfig.VRC25Contract
+	feeCap := vrc25.GetFeeCapacity(st.state, vrc25Contract, addr)
+	if feeCap != nil {
+		gasUsedFee := new(big.Int).Mul(
+			new(big.Int).SetUint64(st.gasUsed()),
+			(*big.Int)(victionConfig.VRC25GasPrice),
+		)
+		vrc25.SetFeeCapacity(st.state, vrc25Contract, *addr, new(big.Int).Sub(feeCap, gasUsedFee))
+	}
+	// Refund remaining native balance to the VRC25 issuer contract.
 	st.state.AddBalance(st.payer, remaining)
 }
 
