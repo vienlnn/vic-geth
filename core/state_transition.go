@@ -296,14 +296,15 @@ func (st *StateTransition) refundGas() {
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
 
-	if st.isVRC25Transaction() {
-		// VRC25-sponsored: delegate refund to the Viction hook.
+	// VRC25, Atlas gas, ...
+	isCustomGasRefunding := st.isVRC25Transaction() || st.evm.ChainConfig().IsAtlas(st.evm.Context.BlockNumber)
+
+	if isCustomGasRefunding {
 		st.vrc25RefundGas(remaining)
-	} else if !st.evm.ChainConfig().IsAtlas(st.evm.Context.BlockNumber) {
-		// Pre-Atlas regular tx: refund remaining gas to sender.
+	} else {
+		// If normal transaction, fallback to basic ETH refunding
 		st.state.AddBalance(st.msg.From(), remaining)
 	}
-	// Post-Atlas regular tx: no refund - remaining gas is burned.
 	
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
