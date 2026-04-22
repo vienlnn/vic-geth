@@ -18,6 +18,11 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// activeFeeBalance holds the per-block running VRC25 fee capacity map for
+// the block currently being processed.  It is set by beforeProcess (via
+// victionProcessorState) and read by vrc25BuyGas during each transaction.
+var activeFeeBalance map[common.Address]*big.Int
+
 // TradingEngine is the interface the TomoX engine must satisfy.
 // Defined here to avoid an import cycle between core and legacy/tomox.
 type TradingEngine interface {

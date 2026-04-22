@@ -9,11 +9,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vrc25"
 )
 
-// activeFeeBalance holds the per-block running VRC25 fee capacity map for
-// the block currently being processed.  It is set by beforeProcess (via
-// victionProcessorState) and read by vrc25BuyGas during each transaction.
-var activeFeeBalance map[common.Address]*big.Int
-
 // vrc25BuyGas checks VRC25 sponsorship eligibility and adjusts payer/gasPrice.
 func (st *StateTransition) vrc25BuyGas() error {
 	st.payer = st.msg.From()

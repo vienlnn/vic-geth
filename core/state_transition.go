@@ -305,7 +305,7 @@ func (st *StateTransition) refundGas() {
 		// If normal transaction, fallback to basic ETH refunding
 		st.state.AddBalance(st.msg.From(), remaining)
 	}
-	
+
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
 	st.gp.AddGas(st.gas)
