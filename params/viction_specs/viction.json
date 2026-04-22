@@ -49,6 +49,7 @@
       "validatorSignInterval": 15,
       "vrc25Contract": "0x8c0faeb5C6bEd2129b8674F262Fd45c4e9468bee",
       "vrc25GasPrice": "250000000",
+      "atlasVRC25MinCap": "1",
       "lendingLiquidateTradeBlock": 100,
       "saigonFundAddress": "0xeDC9f7873a33763c84b82157B034988728445a0E",
       "saigonFundAmount": "0x108b2a2c28029094000000",
