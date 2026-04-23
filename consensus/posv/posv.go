@@ -35,8 +35,6 @@ const (
 	AddressLength          = uint64(20)             // Length of an address
 	ExtraVanity            = 32                     // Fixed number of extra-data prefix bytes reserved for signer vanity
 	ExtraSeal              = crypto.SignatureLength // Fixed number of extra-data suffix bytes reserved for signer seal
-
-	wiggleTime = 500 * time.Millisecond // Random delay (per signer) to allow concurrent signers
 )
 
 type Masternode struct {
@@ -553,30 +551,50 @@ func (c *Posv) Seal(chain consensus.ChainHeaderReader, block *types.Block, resul
 		return err
 	}
 	if _, authorized := snap.Signers[signer]; !authorized {
-		return fmt.Errorf("Posv.Seal: %w", errUnauthorizedSigner)
+		// Fallback: check checkpoint validators list (newly elected validators
+		// may not yet be in the snapshot at epoch boundaries).
+		parent := chain.GetHeader(header.ParentHash, number-1)
+		if parent == nil {
+			return fmt.Errorf("Posv.Seal: %w", errUnauthorizedSigner)
+		}
+		checkpointHeader := GetCheckpointHeader(c.config, parent, chain, nil)
+		validators := ExtractValidatorsFromCheckpointHeader(checkpointHeader)
+		found := false
+		for _, v := range validators {
+			if v == signer {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("Posv.Seal: %w", errUnauthorizedSigner)
+		}
 	}
-	// If we're amongst the recent signers, wait for the next block
-	for seen, recent := range snap.Recents {
-		if recent == signer {
-			// Signer is among RecentsRLP, only wait if the current block doesn't shift it out
-			limit := uint64(len(snap.Signers)/2 + 1)
-			if number < limit || seen > number-limit {
-				inTurn := header.Difficulty.Cmp(diffInTurn) == 0
-				log.Info("Signed recently, must wait for others", "signer", signer, "number", number,
-					"sealhash", SealHash(header), "recentBlock", seen, "recentsLimit", limit,
-					"signers", len(snap.Signers), "inTurnDifficulty", inTurn)
-				return nil
+	// If we're amongst the recent signers, wait for the next block.
+	// Matches victionchain: limit = 2 (only prevents consecutive blocks),
+	// skip check for single-validator chains and epoch blocks.
+	if len(snap.Signers) > 1 {
+		for seen, recent := range snap.Recents {
+			if recent == signer {
+				limit := uint64(2)
+				if number < limit || seen > number-limit {
+					// Allow epoch blocks through even if recently signed
+					if number%c.config.Epoch != 0 {
+						log.Info("Signed recently, must wait for others", "signer", signer, "number", number,
+							"sealhash", SealHash(header), "recentBlock", seen, "recentsLimit", limit,
+							"signers", len(snap.Signers))
+						return nil
+					}
+				}
 			}
 		}
 	}
-	// Sweet, the protocol permits us to sign the block, wait for our time
+	// Sweet, the protocol permits us to sign the block, wait for our time.
+	// Only apply header.Time delay (prevents future blocks). No additional
+	// wiggle — out-of-turn ordering is handled by the worker's hop-based wait.
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
 	if header.Difficulty.Cmp(diffNoTurn) == 0 {
-		// It's not our turn explicitly to sign, delay it a bit
-		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
-		delay += time.Duration(rand.Int63n(int64(wiggle))) // nolint: gosec
-
-		log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
+		log.Trace("Out-of-turn signing requested")
 	}
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypePosv, PosvRLP(header))

@@ -623,12 +623,32 @@ func (w *worker) resultLoop() {
 			// normal posvPropagatedBlockAppendAttestor hook never fires for them.
 			// Run this before stamping receipts/logs so all hashes are consistent
 			// in a single pass.
+			posvSelfAttested := false
 			if w.posvSelfAttestHook != nil {
 				if attested := w.posvSelfAttestHook(block); attested != nil {
 					block = attested
 					hash = block.Hash()
+					posvSelfAttested = true
 				}
 			}
+
+			// [POSV] M1-only guard: when POSV is active, block number > epoch,
+			// and the self-attest hook did NOT attest (M1 != M2), skip
+			// WriteBlockWithState. The block will propagate to the assigned M2
+			// via P2P broadcast (NewMinedBlockEvent) and return fully attested
+			// through the fetcher's posvAppendAttestorHook. Writing M1-only
+			// blocks locally would cause a forced reorg when the attested block
+			// (with a different hash due to Attestor field) arrives.
+			// This matches victionchain's wait() behavior.
+			if w.chainConfig.Posv != nil &&
+				block.NumberU64() > w.chainConfig.Posv.Epoch &&
+				!posvSelfAttested {
+				log.Info("POSV: M1-only block, skip local write, broadcast for M2 attestation",
+					"number", block.Number(), "sealhash", sealhash, "hash", hash)
+				w.mux.Post(core.NewMinedBlockEvent{Block: block})
+				continue
+			}
+
 			// Different block could share same sealhash, deep copy here to prevent write-write conflict.
 			var (
 				receipts = make([]*types.Receipt, len(task.receipts))
