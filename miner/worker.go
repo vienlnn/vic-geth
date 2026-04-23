@@ -1128,7 +1128,7 @@ func (w *worker) commitNewWorkWithPosv(interrupt *int32, noempty bool, timestamp
 	header := &types.Header{
 		ParentHash: parent.Hash(),
 		Number:     num.Add(num, common.Big1),
-		GasLimit:   core.CalcGasLimit(parent, w.config.GasFloor, w.config.GasCeil),
+		GasLimit:   params.VictionGasLimit,
 		Extra:      w.extra,
 		Time:       uint64(timestamp),
 	}
