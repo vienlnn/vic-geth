@@ -13,6 +13,9 @@
     "tipBlacklistBlock": 9349100,
     "tipTRC21FeeBlock": 13523400,
     "tipFixSignerCheckBlock": 14458500,
+    "tipTomoXBlock": 20581700,
+    "tipTomoXLendingBlock": 21430200,
+    "tipTomoXCancelFeeBlock": 30915660,
     "petersburgBlock": 30915660,
     "istanbulBlock": 30915660,
     "saigonBlock": 86158494,
@@ -45,6 +48,13 @@
       "validatorMinBlockPerEpochCount": 1,
       "validatorSignInterval": 15,
       "vrc25Contract": "0x8c0faeb5C6bEd2129b8674F262Fd45c4e9468bee",
-      "vrc25GasPrice": "250000000"
+      "vrc25GasPrice": "250000000",
+      "atlasVRC25MinCap": "1",
+      "lendingLiquidateTradeBlock": 100,
+      "saigonFundAddress": "0xeDC9f7873a33763c84b82157B034988728445a0E",
+      "saigonFundAmount": "0x108b2a2c28029094000000",
+      "saigonFundInterval": 13800000,
+      "saigonFundRepeat": 4,
+      "saigonRewardPerEpoch": "0xd8d726b7177a80000"
     }
   }

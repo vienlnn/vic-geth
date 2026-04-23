@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-package tradingstate
+package lendingstate
 
 import (
 	"fmt"
@@ -82,17 +82,18 @@ func (t *TomoXTrie) TryGet(key []byte) ([]byte, error) {
 	return t.trie.TryGet(key)
 }
 
-// TryGetBestLeftKey returns the value of max left leaf
+// TryGetBestLeftKeyAndValue returns the value of max left leaf
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *TomoXTrie) TryGetBestLeftKeyAndValue() ([]byte, []byte, error) {
 	return t.trie.TryGetBestLeftKeyAndValue()
 }
 
+// TryGetAllLeftKeyAndValue returns all leaves whose key is strictly less than limit.
 func (t *TomoXTrie) TryGetAllLeftKeyAndValue(limit []byte) ([][]byte, [][]byte, error) {
 	return t.trie.TryGetAllLeftKeyAndValue(limit)
 }
 
-// TryGetBestRightKey returns the value of max left leaf
+// TryGetBestRightKeyAndValue returns the value of max right leaf
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *TomoXTrie) TryGetBestRightKeyAndValue() ([]byte, []byte, error) {
 	return t.trie.TryGetBestRightKeyAndValue()
@@ -186,18 +187,6 @@ func (t *TomoXTrie) Copy() *TomoXTrie {
 func (t *TomoXTrie) NodeIterator(start []byte) trie.NodeIterator {
 	return t.trie.NodeIterator(start)
 }
-
-// hashKey returns the hash of key as an ephemeral buffer.
-// The caller must not hold onto the return value because it will become
-// invalid on the next call to hashKey or secKey.
-//func (t *TomoXTrie) hashKey(key []byte) []byte {
-//	h := newHasher(0, 0, nil)
-//	h.sha.Reset()
-//	h.sha.Write(key)
-//	buf := h.sha.Sum(t.hashKeyBuf[:0])
-//	returnHasherToPool(h)
-//	return buf
-//}
 
 // getSecKeyCache returns the current secure key cache, creating a new one if
 // ownership changed (i.e. the current secure trie is a copy of another owning

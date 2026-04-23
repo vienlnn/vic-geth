@@ -586,6 +586,7 @@ func DoSettleBalance(coinbase common.Address, takerOrder, makerOrder *tradingsta
 	tradingstate.SetSubRelayerFee(makerOrder.ExchangeAddress, newRelayerMakerFee, tradingstate.RelayerFee, statedb)
 
 	masternodeOwner, _ := statedb.VicGetValidatorInfo(common.HexToAddress(tradingstate.ValidatorContract), coinbase)
+	log.Debug("DoSettleBalance masternode fee", "coinbase", coinbase, "masternodeOwner", masternodeOwner, "matchingFee", matchingFee)
 	statedb.AddBalance(masternodeOwner, matchingFee)
 
 	tradingstate.SetTokenBalance(takerOrder.UserAddress, newTakerInTotal, settleBalance.Taker.InToken, statedb)
@@ -652,7 +653,8 @@ func (tomox *TomoX) ProcessCancelOrder(header *types.Header, tradingStateDB *tra
 	}
 	// relayers pay TOMO for masternode
 	tradingstate.SubRelayerFee(originOrder.ExchangeAddress, tradingstate.RelayerCancelFee, statedb)
-	masternodeOwner, _ := statedb.VicGetValidatorInfo(chain.Config().Viction.ValidatorContract, coinbase)
+	masternodeOwner, _ := statedb.VicGetValidatorInfo(common.HexToAddress(tradingstate.ValidatorContract), coinbase)
+	log.Debug("ProcessCancelOrder masternode fee", "coinbase", coinbase, "masternodeOwner", masternodeOwner, "cancelFee", tradingstate.RelayerCancelFee)
 	// relayers pay TOMO for masternode
 	statedb.AddBalance(masternodeOwner, tradingstate.RelayerCancelFee)
 

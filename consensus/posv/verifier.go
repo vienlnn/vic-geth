@@ -168,6 +168,11 @@ func (c *Posv) verifyValidators(chain consensus.ChainReader, header *types.Heade
 	number := header.Number.Uint64()
 	log.Debug("Verifying checkpoint validators", "number", number, "hash", header.Hash().Hex())
 
+	// ignore signerCheck at checkpoint block 14458500 due to wrong snapshot at gap 14458495
+	if number == chain.Config().TIPFixSignerCheckBlock.Uint64() {
+		return nil
+	}
+
 	// Load snapshot at the gap block (checkpoint - Gap), where UpdateMasternodes
 	// stored the updated snapshot. Resolve the gap block hash from DB first,
 	// then fall back to the in-batch parents slice.

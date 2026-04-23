@@ -64,12 +64,12 @@ func PayFeeWithVRC25(statedb vm.StateDB, from common.Address, token common.Addre
 		// 6. Determine the actual fee to charge (lesser of balance or minFee)
 		feeUsed := new(big.Int).Set(minFee)
 		if balance.Cmp(minFee) < 0 {
-			feeUsed.Set(balance)
+			feeUsed = balance
 		}
 
 		// 7. Deduct the fee from the user's balance and update state
-		newBalance := new(big.Int).Sub(balance, feeUsed)
-		statedb.SetState(token, balanceKey.Hash(), common.BigToHash(newBalance))
+		balance.Sub(balance, feeUsed)
+		statedb.SetState(token, balanceKey.Hash(), common.BigToHash(balance))
 
 		// 8. Add the fee to the issuer's balance and update state
 		issuerBalanceKey := state.StorageLocationOfMappingElement(balanceSlot, issuerAddr.Hash().Bytes())
@@ -93,6 +93,39 @@ func UpdateFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, newBala
 		statedb.SetState(vrc25Contract, balanceKey.Hash(), common.BigToHash(value))
 	}
 	statedb.SubBalance(vrc25Contract, totalFeeUsed)
+}
+
+// SetFeeCapacity writes a token's fee capacity into the VRC25 issuer contract's
+// tokensState mapping. Called during post-Atlas gas purchase to deduct the
+// pre-committed fee from the slot before EVM execution.
+func SetFeeCapacity(statedb vm.StateDB, vrc25Contract common.Address, token common.Address, value *big.Int) {
+	key := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(SlotVRC25Contract["tokensState"]), token.Hash().Bytes())
+	statedb.SetState(vrc25Contract, key.Hash(), common.BigToHash(value))
+}
+
+// GetAllFeeCapacities reads the entire tokensState mapping from the VRC25 issuer
+// contract and returns a snapshot of every registered token's fee capacity.
+func GetAllFeeCapacities(statedb vm.StateDB, vrc25Contract common.Address) map[common.Address]*big.Int {
+	result := map[common.Address]*big.Int{}
+
+	// tokens is a dynamic array at slot 1; read its length first.
+	tokensSlot := state.StorageLocationFromSlot(SlotVRC25Contract["tokens"])
+	tokenCount := statedb.GetState(vrc25Contract, tokensSlot.Hash()).Big().Uint64()
+
+	slotTokensState := SlotVRC25Contract["tokensState"]
+	for i := uint64(0); i < tokenCount; i++ {
+		// Each element of the dynamic array is stored at keccak256(slot) + i.
+		elemKey := state.StorageLocationOfDynamicArrayElement(tokensSlot, i, 1)
+		tokenHash := statedb.GetState(vrc25Contract, elemKey.Hash())
+		if tokenHash == (common.Hash{}) {
+			continue
+		}
+		token := common.BytesToAddress(tokenHash.Bytes())
+		balanceKey := state.StorageLocationOfMappingElement(state.StorageLocationFromSlot(slotTokensState), token.Hash().Bytes())
+		cap := statedb.GetState(vrc25Contract, balanceKey.Hash()).Big()
+		result[token] = cap
+	}
+	return result
 }
 
 // we use vm.StateDB interface instead of *StateDB
