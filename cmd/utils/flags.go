@@ -819,6 +819,8 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 		urls = params.YoloV2Bootnodes
 	case ctx.GlobalBool(VictionFlag.Name):
 		urls = params.VictionBootnodes
+	case ctx.GlobalBool(VictestFlag.Name):
+		urls = params.VicTestBootNodes
 	case cfg.BootstrapNodes != nil:
 		return // already set, don't apply defaults.
 	}
@@ -857,6 +859,8 @@ func setBootstrapNodesV5(ctx *cli.Context, cfg *p2p.Config) {
 		urls = params.YoloV2Bootnodes
 	case ctx.GlobalBool(VictionFlag.Name):
 		urls = params.VictionBootnodes
+	case ctx.GlobalBool(VictestFlag.Name):
+		urls = params.VicTestBootNodes
 	case cfg.BootstrapNodesV5 != nil:
 		return // already set, don't apply defaults.
 	}

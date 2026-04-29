@@ -82,6 +82,11 @@ var VictionBootnodes = []string{
 	"enode://d3a79693bf18fd5136a4b1809193e28f94400b00a65a7f21c918876d986212c8031834b332f39fb8a814fb5e90f0e413fead6953d1aa23a839bba1224e285ed6@122.248.245.143:30301",
 }
 
+var VicTestBootNodes = []string{
+	"enode://b5ecc9a8d98531a18e6a6b486fef7cee698685b41660dbf5874fa7f54b8a4572f238552419f24a4113a4bd9e58e54ede5ddfadde5dff1d5114f774459d2aa7d0@162.19.43.250:14033",
+	"enode://a98710f788a8042a9a055603421b5c7612cb9832e34739f73abef15f50fc30577b9e835b86ffc0ac935bf3c680a9850f8a4344e9d5fb5549f7484229c93f2f97@162.19.43.250:14633",
+}
+
 const dnsPrefix = "enrtree://AKA3AM6LPBYEUDMVNU3BSVQJ5AD45Y7YPOHJLEF6W26QOE4VTUDPE@"
 
 // KnownDNSNetwork returns the address of a public DNS-based node list for the given
@@ -100,6 +105,8 @@ func KnownDNSNetwork(genesis common.Hash, protocol string) string {
 		net = "goerli"
 	case VictionGenesisHash:
 		net = "viction"
+	case VictestGenesisHash:
+		net = "victest"
 	default:
 		return ""
 	}
